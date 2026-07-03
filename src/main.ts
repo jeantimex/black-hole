@@ -10,8 +10,56 @@ function requireElement<T extends Element>(selector: string) {
   return element
 }
 
-const canvas = requireElement<HTMLCanvasElement>('#webgpu-canvas')
-const unsupported = requireElement<HTMLDivElement>('#unsupported')
+const canvas = requireElement<HTMLCanvasElement>('#camera_view')
+const errorPanel = requireElement<HTMLDivElement>('#cv_error_panel')
+const loadingPanel = requireElement<HTMLDivElement>('#cv_loading_panel')
+const settingsPanel = requireElement<HTMLFormElement>('#settings_panel')
+const orbitPanel = requireElement<HTMLDivElement>('#orbit_panel')
+const orbitCanvas = requireElement<HTMLCanvasElement>('#orbit_canvas')
+
+function showError(message: string) {
+  errorPanel.textContent = message
+  errorPanel.classList.remove('cv-hidden')
+  loadingPanel.classList.add('cv-loaded')
+}
+
+function setUiVisible(visible: boolean) {
+  settingsPanel.classList.toggle('sp-hidden', !visible)
+  orbitPanel.classList.toggle('op-hidden', !visible)
+}
+
+function drawOrbitPanel() {
+  const context = orbitCanvas.getContext('2d')
+
+  if (!context) {
+    return
+  }
+
+  const center = orbitCanvas.width / 2
+  context.clearRect(0, 0, orbitCanvas.width, orbitCanvas.height)
+  context.strokeStyle = 'rgba(255, 255, 255, 0.45)'
+  context.lineWidth = 1
+
+  for (const radius of [48, 96, 144, 192]) {
+    context.beginPath()
+    context.arc(center, center, radius, 0, Math.PI * 2)
+    context.stroke()
+  }
+
+  context.fillStyle = '#000'
+  context.beginPath()
+  context.arc(center, center, 24, 0, Math.PI * 2)
+  context.fill()
+}
+
+document.addEventListener('keydown', (event) => {
+  if (event.code === 'Space' && event.target === document.body) {
+    event.preventDefault()
+    setUiVisible(settingsPanel.classList.contains('sp-hidden'))
+  }
+})
+
+drawOrbitPanel()
 
 const shader = /* wgsl */ `
 @group(0) @binding(0) var textSampler: sampler;
@@ -79,7 +127,7 @@ function drawTextTexture(width: number, height: number) {
 
 async function start() {
   if (!navigator.gpu) {
-    unsupported.hidden = false
+    showError('WebGPU is not available. Use a current Chromium-based browser with WebGPU enabled.')
     canvas.hidden = true
     return
   }
@@ -88,7 +136,7 @@ async function start() {
   const device = adapter ? await adapter.requestDevice() : null
 
   if (!device) {
-    unsupported.hidden = false
+    showError('Could not request a WebGPU device.')
     canvas.hidden = true
     return
   }
@@ -96,10 +144,12 @@ async function start() {
   const context = canvas.getContext('webgpu')
 
   if (!context) {
-    unsupported.hidden = false
+    showError('Could not create a WebGPU canvas context.')
     canvas.hidden = true
     return
   }
+
+  loadingPanel.classList.add('cv-loaded')
 
   const gpuDevice = device
   const gpuContext = context
@@ -213,6 +263,6 @@ async function start() {
 
 start().catch((error: unknown) => {
   console.error(error)
-  unsupported.hidden = false
+  showError(error instanceof Error ? error.message : 'Unexpected WebGPU startup error.')
   canvas.hidden = true
 })

@@ -3,14 +3,289 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Blackhole WebGPU</title>
+    <title>Black Hole Shader WebGPU</title>
   </head>
   <body>
-    <canvas id="webgpu-canvas" aria-label="WebGPU black hole simulation"></canvas>
-    <div id="unsupported" hidden>
-      <h1>WebGPU is not available</h1>
-      <p>Use a current Chromium-based browser with WebGPU enabled.</p>
+    <div class="cv-container">
+      <canvas id="camera_view" width="400" height="300"></canvas>
+
+      <div id="cv_error_panel" class="cv-error-panel cv-hidden"></div>
+
+      <div id="cv_loading_panel" class="cv-loading-panel">
+        <span>Loading stars data...</span>
+        <div class="cv-loading-bar">
+          <div id="cv_loading_bar" class="cv-loading-bar-value"></div>
+        </div>
+        <span>Press <em>space</em> to show / hide the User Interface</span>
+      </div>
+
+      <div class="cv-copyright">
+        @2020 Eric Bruneton.
+        <a href="https://github.com/ebruneton/black_hole_shader" target="_blank">
+          GitHub project
+        </a>.
+        Star data from
+        <a href="https://www.cosmos.esa.int/web/gaia/dr2" target="_blank">
+          Gaia DR2
+        </a>
+        and
+        <a
+          href="https://www.cosmos.esa.int/web/hipparcos/tycho-2"
+          target="_blank"
+        >
+          Tycho 2
+        </a>
+      </div>
     </div>
+
+    <div id="orbit_panel" class="op-panel">
+      <canvas id="orbit_canvas" width="400" height="400"></canvas>
+      <div id="op_dot" class="op-dot"></div>
+      <div id="op_frustum0" class="op-frustum"></div>
+      <div id="op_frustum1" class="op-frustum"></div>
+      <div id="op_frustum2" class="op-frustum"></div>
+      <div id="op_frustum3" class="op-frustum"></div>
+      <div id="op_frustum4" class="op-frustum"></div>
+      <div id="op_frustum5" class="op-frustum"></div>
+      <div id="op_frustum6" class="op-frustum"></div>
+      <div id="op_frustum7" class="op-frustum"></div>
+      <div id="op_frustum8" class="op-frustum"></div>
+      <div class="op-info">
+        <div>Black hole radius: <span id="op_black_hole_radius">2.95 km</span></div>
+        <div>Distance: <span id="op_radius">29.5 km</span></div>
+        <div>Speed: <span id="op_speed">0 km/s</span></div>
+        <div>G-force: <span id="op_gforce">0 g</span></div>
+        <div>Local time: <span id="op_local_time">0 s</span></div>
+        <div>Earth time: <span id="op_global_time">0 s</span></div>
+        <div>Time dilation: <span id="op_time_dilation">1</span></div>
+      </div>
+    </div>
+
+    <form id="settings_panel" class="sp-panel sp-playing">
+      <details open class="sp-settings-container">
+        <summary>Camera</summary>
+
+        <div class="sp-setting">
+          <label for="sp_exposure">Exposure</label>
+          <span class="sp-slider-container">
+            <button type="button">-</button>
+            <input type="range" id="sp_exposure" min="-10" max="10" value="0" />
+            <button type="button">+</button>
+          </span>
+          <span id="sp_exposure_value" class="sp-value">0</span>
+        </div>
+
+        <div class="sp-setting">
+          <label for="sp_bloom">Bloom</label>
+          <span class="sp-slider-container">
+            <button type="button">-</button>
+            <input type="range" id="sp_bloom" min="0" max="100" value="30" />
+            <button type="button">+</button>
+          </span>
+          <span id="sp_bloom_value" class="sp-value">30%</span>
+        </div>
+
+        <div class="sp-setting" id="sp_high_definition_div">
+          <label for="sp_high_definition">High Definition</label>
+          <input type="checkbox" id="sp_high_definition" />
+        </div>
+
+        <div class="sp-setting">
+          <label for="sp_high_contrast">High contrast</label>
+          <input type="checkbox" id="sp_high_contrast" />
+        </div>
+
+        <div class="sp-setting">
+          <label>View</label>
+          <span class="sp-target-container" id="sp_target_container" select="0">
+            <button type="button" id="sp_target0">○</button>
+            <button type="button" id="sp_target1">●</button>
+            <button type="button" id="sp_target2">◂</button>
+            <button type="button" id="sp_target3">▴</button>
+            <button type="button" id="sp_target4">▸</button>
+          </span>
+        </div>
+
+        <h3>Orbit</h3>
+
+        <div class="sp-settings-container">
+          <div class="sp-setting">
+            <label for="sp_start_radius">Initial distance</label>
+            <span class="sp-slider-container">
+              <button type="button">-</button>
+              <input type="range" id="sp_start_radius" min="2" max="100" value="10" />
+              <button type="button">+</button>
+            </span>
+            <span id="sp_start_radius_value" class="sp-value">10</span>
+          </div>
+
+          <div class="sp-setting">
+            <label for="sp_start_direction">Initial direction</label>
+            <span class="sp-slider-container">
+              <button type="button">-</button>
+              <input type="range" id="sp_start_direction" min="-180" max="180" value="0" />
+              <button type="button">+</button>
+            </span>
+            <span id="sp_start_direction_value" class="sp-value">0</span>
+          </div>
+
+          <div class="sp-setting">
+            <label for="sp_start_speed">Initial speed</label>
+            <span class="sp-slider-container">
+              <button type="button">-</button>
+              <input type="range" id="sp_start_speed" min="0" max="100" value="0" />
+              <button type="button">+</button>
+            </span>
+            <span id="sp_start_speed_value" class="sp-value">0</span>
+          </div>
+
+          <div class="sp-setting">
+            <label for="sp_orbit_inclination">Inclination</label>
+            <span class="sp-slider-container">
+              <button type="button">-</button>
+              <input type="range" id="sp_orbit_inclination" min="0" max="180" value="0" />
+              <button type="button">+</button>
+            </span>
+            <span id="sp_orbit_inclination_value" class="sp-value">0</span>
+          </div>
+
+          <div class="sp-setting">
+            <label>Motion</label>
+            <span class="sp-play-container">
+              <button id="sp_play" type="button" class="sp-play">⏵</button>
+              <button id="sp_pause" type="button" class="sp-pause">⏸</button>
+              <button id="sp_stop" type="button" class="sp-stop">⏹</button>
+            </span>
+          </div>
+        </div>
+      </details>
+
+      <details open class="sp-settings-container">
+        <summary>Physics</summary>
+
+        <div class="sp-setting">
+          <label for="sp_lensing">Lensing</label>
+          <input type="checkbox" id="sp_lensing" checked />
+        </div>
+
+        <div class="sp-setting">
+          <label for="sp_doppler">Doppler</label>
+          <input type="checkbox" id="sp_doppler" checked />
+        </div>
+      </details>
+
+      <details open class="sp-settings-container">
+        <summary>Scene</summary>
+
+        <div class="sp-setting">
+          <label for="sp_grid">Grid</label>
+          <input type="checkbox" id="sp_grid" />
+        </div>
+
+        <div class="sp-setting">
+          <label for="sp_black_hole_mass">Black hole mass</label>
+          <span class="sp-slider-container">
+            <button type="button">-</button>
+            <input type="range" id="sp_black_hole_mass" min="1" max="100" value="10" />
+            <button type="button">+</button>
+          </span>
+          <span id="sp_black_hole_mass_value" class="sp-value">10</span>
+        </div>
+
+        <h3>Disc</h3>
+
+        <div class="sp-settings-container">
+          <div class="sp-setting">
+            <label for="sp_disc_density">Density</label>
+            <span class="sp-slider-container">
+              <button type="button">-</button>
+              <input type="range" id="sp_disc_density" min="0" max="100" value="50" />
+              <button type="button">+</button>
+            </span>
+            <span id="sp_disc_density_value" class="sp-value">50%</span>
+          </div>
+
+          <div class="sp-setting">
+            <label for="sp_disc_opacity">Opacity</label>
+            <span class="sp-slider-container">
+              <button type="button">-</button>
+              <input type="range" id="sp_disc_opacity" min="0" max="100" value="60" />
+              <button type="button">+</button>
+            </span>
+            <span id="sp_disc_opacity_value" class="sp-value">60%</span>
+          </div>
+
+          <div class="sp-setting">
+            <label for="sp_disc_temperature">Temperature</label>
+            <span class="sp-slider-container">
+              <button type="button">-</button>
+              <input type="range" id="sp_disc_temperature" min="1000" max="20000" value="8000" />
+              <button type="button">+</button>
+            </span>
+            <span id="sp_disc_temperature_value" class="sp-value">8000K</span>
+          </div>
+        </div>
+
+        <h3>Rocket</h3>
+
+        <div class="sp-settings-container">
+          <div class="sp-setting">
+            <label for="sp_rocket_distance">Distance</label>
+            <span class="sp-slider-container">
+              <button type="button">-</button>
+              <input type="range" id="sp_rocket_distance" min="1" max="100" value="20" />
+              <button type="button">+</button>
+            </span>
+            <span id="sp_rocket_distance_value" class="sp-value">20</span>
+          </div>
+
+          <div class="sp-setting">
+            <label for="sp_rocket">Enabled</label>
+            <input type="checkbox" id="sp_rocket" />
+          </div>
+        </div>
+
+        <h3>Stars</h3>
+
+        <div class="sp-settings-container">
+          <div class="sp-setting">
+            <label for="sp_stars_yaw">Yaw</label>
+            <span class="sp-slider-container">
+              <button type="button">-</button>
+              <input type="range" id="sp_stars_yaw" min="-180" max="180" value="0" />
+              <button type="button">+</button>
+            </span>
+            <span id="sp_stars_yaw_value" class="sp-value">0</span>
+          </div>
+
+          <div class="sp-setting">
+            <label for="sp_stars_pitch">Pitch</label>
+            <span class="sp-slider-container">
+              <button type="button">-</button>
+              <input type="range" id="sp_stars_pitch" min="-90" max="90" value="0" />
+              <button type="button">+</button>
+            </span>
+            <span id="sp_stars_pitch_value" class="sp-value">0</span>
+          </div>
+
+          <div class="sp-setting">
+            <label for="sp_stars_roll">Roll</label>
+            <span class="sp-slider-container">
+              <button type="button">-</button>
+              <input type="range" id="sp_stars_roll" min="-180" max="180" value="0" />
+              <button type="button">+</button>
+            </span>
+            <span id="sp_stars_roll_value" class="sp-value">0</span>
+          </div>
+
+          <div class="sp-setting sp-last">
+            <label for="sp_stars">Enabled</label>
+            <input type="checkbox" id="sp_stars" checked />
+          </div>
+        </div>
+      </details>
+    </form>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
