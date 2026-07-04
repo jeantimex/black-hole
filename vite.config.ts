@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite'
+import { resolve } from 'path'
 
 export default defineConfig({
   server: {
@@ -6,5 +7,13 @@ export default defineConfig({
   },
   preview: {
     host: '127.0.0.1',
+  },
+  build: {
+    rollupOptions: {
+      input: {
+        main: resolve(__dirname, 'index.html'),
+        webgpu: resolve(__dirname, 'webgpu.html'),
+      },
+    },
   },
 })
