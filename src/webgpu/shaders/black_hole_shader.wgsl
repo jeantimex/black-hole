@@ -315,9 +315,6 @@ fn StarTextureColorLod(dir: vec3<f32>, lod: f32) -> StarColorResult {
 
 fn inverseMat2(m: mat2x2<f32>) -> mat2x2<f32> {
   let det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
-  if (abs(det) < 1e-6) {
-    return mat2x2<f32>(vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0));
-  }
   let invDet = 1.0 / det;
   return mat2x2<f32>(
     vec2<f32>(m[1][1] * invDet, -m[0][1] * invDet),
@@ -375,9 +372,8 @@ fn DefaultStarColor(dir_in: vec3<f32>, dx_dir_in: vec3<f32>, dy_dir_in: vec3<f32
       let star_lookup = StarTextureColorLod(texel_dir, lod);
       let star_uv = uv - texel_uv + star_lookup.sub_position / lod_width;
       let star_pixel_coords = to_screen_pixel_coords * star_uv;
-      let dist2 = dot(star_pixel_coords, star_pixel_coords);
-      let overlap = exp(-dist2 * 1.5);
-      color_sum += star_lookup.color * overlap;
+      let overlap = max(vec2<f32>(1.0) - abs(star_pixel_coords), vec2<f32>(0.0));
+      color_sum += star_lookup.color * overlap.x * overlap.y;
     }
   }
   return color_sum * lensing_amplification_factor;
