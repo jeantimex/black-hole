@@ -1,4 +1,4 @@
-var V=Object.defineProperty;var H=(i,e,t)=>e in i?V(i,e,{enumerable:!0,configurable:!0,writable:!0,value:t}):i[e]=t;var l=(i,e,t)=>H(i,typeof e!="symbol"?e+"":e,t);import{M as W,U as j,S as Y,O as Z}from"./orbit_panel-ByLhCXyj.js";const $=`/**
+var V=Object.defineProperty;var H=(i,e,t)=>e in i?V(i,e,{enumerable:!0,configurable:!0,writable:!0,value:t}):i[e]=t;var l=(i,e,t)=>H(i,typeof e!="symbol"?e+"":e,t);import{M as W,U as j,S as Y}from"./settings_panel-i3tiS7Ws.js";import{O as Z}from"./orbit_panel-BjfCWvSP.js";const $=`/**
  * @file exhaust_vertex_shader.glsl
  * @brief Vertex shader for the rocket's volume-rendered engine exhaust.
  *
