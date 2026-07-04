@@ -4,13 +4,20 @@
  */
 const MAX_STAR_TEXTURE_LOD = 6;
 
+const resolveUrl = function(url: string): string {
+  if (url.startsWith('http://') || url.startsWith('https://')) {
+    return url;
+  }
+  return import.meta.env.BASE_URL + url;
+};
+
 /**
  * Loads binary floating-point texture tables via XMLHttpRequest.
  * Parses the ArrayBuffer into a Float32Array using little-endian encoding.
  */
 const loadTextureData = function(textureDataUrl: string, callback: (data: Float32Array) => void): void {
   const xhr = new XMLHttpRequest();
-  xhr.open('GET', textureDataUrl);
+  xhr.open('GET', resolveUrl(textureDataUrl));
   xhr.responseType = 'arraybuffer';
   xhr.onload = () => {
     if (xhr.status !== 200) {
@@ -41,7 +48,7 @@ const loadTextureData = function(textureDataUrl: string, callback: (data: Float3
  */
 const loadIntTextureData = function(textureDataUrl: string, callback: (data: Uint32Array) => void): void {
   const xhr = new XMLHttpRequest();
-  xhr.open('GET', textureDataUrl);
+  xhr.open('GET', resolveUrl(textureDataUrl));
   xhr.responseType = 'arraybuffer';
   xhr.onload = () => {
     if (xhr.status !== 200) {
@@ -365,7 +372,7 @@ export class TextureManager {
     });
 
     // Queue up network requests for all star map tiles across 5 LOD levels (l=0 to l=4).
-    const base = 'https://ebruneton.github.io/gaia_sky_map';
+    const base = 'gaia_sky_map';
     const prefixes = ['pos-x', 'neg-x', 'pos-y', 'neg-y', 'pos-z', 'neg-z'];
     for (let l = 0; l <= 4; ++l) {
       const size = 2048 / (1 << l);
@@ -482,7 +489,7 @@ export class TextureManager {
         [imageBitmap.width, imageBitmap.height]
       );
     });
-    image.src = textureUrl;
+    image.src = import.meta.env.BASE_URL + textureUrl;
   }
 
   /**

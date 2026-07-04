@@ -53,7 +53,7 @@ fn frag_main(in: VertexOutput) -> @location(0) vec4<f32> {
  */
 const loadRocketMesh = function(rocketDataUrl: string, callback: (vertices: Float32Array, indices: Uint32Array) => void): void {
   const xhr = new XMLHttpRequest();
-  xhr.open('GET', rocketDataUrl);
+  xhr.open('GET', import.meta.env.BASE_URL + rocketDataUrl);
   xhr.responseType = 'arraybuffer';
   xhr.onload = () => {
     if (xhr.status !== 200) {
@@ -144,7 +144,7 @@ const loadRocketTexture = function(device: GPUDevice, textureUrl: string): Textu
       console.error("Failed to load/generate mipmaps for rocket texture:", textureUrl, e);
     }
   });
-  image.src = textureUrl;
+  image.src = import.meta.env.BASE_URL + textureUrl;
   return wrapper;
 };
 

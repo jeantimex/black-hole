@@ -60,12 +60,19 @@ const createTexture = function(gl: WebGL2RenderingContext, target: number): WebG
   return texture;
 };
 
+const resolveUrl = function(url: string): string {
+  if (url.startsWith('http://') || url.startsWith('https://')) {
+    return url;
+  }
+  return import.meta.env.BASE_URL + url;
+};
+
 /**
  * @brief Asynchronously fetches binary float32 data from a URL.
  */
 const loadTextureData = function(textureDataUrl: string, callback: (data: Float32Array) => void): void {
   const xhr = new XMLHttpRequest();
-  xhr.open('GET', textureDataUrl);
+  xhr.open('GET', resolveUrl(textureDataUrl));
   xhr.responseType = 'arraybuffer';
   xhr.onload = () => {
     const data = new DataView(xhr.response);
@@ -83,7 +90,7 @@ const loadTextureData = function(textureDataUrl: string, callback: (data: Float3
  */
 const loadIntTextureData = function(textureDataUrl: string, callback: (data: Uint32Array) => void): void {
   const xhr = new XMLHttpRequest();
-  xhr.open('GET', textureDataUrl);
+  xhr.open('GET', resolveUrl(textureDataUrl));
   xhr.responseType = 'arraybuffer';
   xhr.onload = () => {
     const data = new DataView(xhr.response);
@@ -116,7 +123,7 @@ const loadNoiseTexture = function(gl: WebGL2RenderingContext, glExt: any, textur
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, gl.RED, gl.UNSIGNED_BYTE, image);
     gl.generateMipmap(gl.TEXTURE_2D);
   });
-  image.src = textureUrl;
+  image.src = import.meta.env.BASE_URL + textureUrl;
   return texture;
 };
 
@@ -279,7 +286,7 @@ export class TextureManager {
                      gl.getParameter(glExt.MAX_TEXTURE_MAX_ANISOTROPY_EXT));
 
     // Define and queue URL addresses for all Gaia catalog tiles
-    const base = 'https://ebruneton.github.io/gaia_sky_map';
+    const base = 'gaia_sky_map';
     const prefixes = ['pos-x', 'neg-x', 'pos-y', 'neg-y', 'pos-z', 'neg-z'];
     const targets = cubeMapTargets(gl);
     for (let l = 0; l <= 4; ++l) {

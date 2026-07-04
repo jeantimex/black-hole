@@ -60,7 +60,7 @@ const createShader = function(gl: WebGL2RenderingContext, type: number, source: 
  */
 const loadRocketMesh = function(rocketDataUrl: string, callback: (vertices: Float32Array, indices: Uint32Array) => void): void {
   const xhr = new XMLHttpRequest();
-  xhr.open('GET', rocketDataUrl);
+  xhr.open('GET', import.meta.env.BASE_URL + rocketDataUrl);
   xhr.responseType = 'arraybuffer';
   xhr.onload = () => {
     const data = new DataView(xhr.response);
@@ -106,7 +106,7 @@ const loadRocketTexture = function(gl: WebGL2RenderingContext, textureUrl: strin
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, image);
     gl.generateMipmap(gl.TEXTURE_2D);
   });
-  image.src = textureUrl;
+  image.src = import.meta.env.BASE_URL + textureUrl;
   return texture;
 };
 
