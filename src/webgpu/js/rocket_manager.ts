@@ -1,16 +1,23 @@
 import { Model } from '../../common/model';
 import type { CameraView } from './camera_view';
 
+// Near and far clipping planes for the rocket scene rendering.
 const NEAR_PLANE = 0.1;
 const FAR_PLANE = 100.0;
 
+// Env map levels and resolution for the local cubemap reflection around the rocket.
 const ENV_MAP_LEVELS = 7;
-const ENV_MAP_SIZE = 1 << (ENV_MAP_LEVELS - 1); // 64
+const ENV_MAP_SIZE = 1 << (ENV_MAP_LEVELS - 1); // 64x64 pixels per face
 
+// Dimensions for the rocket exhaust cone structure.
 const EXHAUST_RADIUS = 0.514;
 const EXHAUST_Z_MIN = -20.0;
 const EXHAUST_Z_MAX = -2.1;
 
+/**
+ * WGSL Shader Module used to programmatically generate mipmaps.
+ * Employs a full-screen triangle shader that draws a texture level L-1 into level L.
+ */
 const MIPMAP_WGSL = `
 struct VertexOutput {
   @builtin(position) Position: vec4<f32>,
@@ -20,6 +27,7 @@ struct VertexOutput {
 @vertex
 fn vert_main(@builtin(vertex_index) VertexIndex: u32) -> VertexOutput {
   var out: VertexOutput;
+  // Generate a full-screen quad from a single triangle index.
   var pos = vec2<f32>(
     f32((VertexIndex << 1u) & 2u) - 1.0,
     f32(VertexIndex & 2u) - 1.0
@@ -39,6 +47,10 @@ fn frag_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 `;
 
+/**
+ * Loads custom binary rocket meshes containing float32 vertex coordinates
+ * (position, normal, tangent, UV, extra) and uint32 index arrays.
+ */
 const loadRocketMesh = function(rocketDataUrl: string, callback: (vertices: Float32Array, indices: Uint32Array) => void): void {
   const xhr = new XMLHttpRequest();
   xhr.open('GET', rocketDataUrl);
@@ -49,6 +61,8 @@ const loadRocketMesh = function(rocketDataUrl: string, callback: (vertices: Floa
       return;
     }
     const data = new DataView(xhr.response);
+    
+    // Header contains the number of vertex components and face indices.
     const numVertexFloats = data.getUint32(0, true);
     const numIndices = data.getUint32(Uint32Array.BYTES_PER_ELEMENT, true);
 
@@ -72,7 +86,13 @@ interface TextureWrapper {
   texture: GPUTexture;
 }
 
+/**
+ * Loads rocket texture assets and generates mipmaps.
+ * Employs a 2D HTML Canvas element to manually resize the source image bitmap,
+ * copying each resized level into the target WebGPU texture mip-chain.
+ */
 const loadRocketTexture = function(device: GPUDevice, textureUrl: string): TextureWrapper {
+  // Initialize with a temporary 1x1 white placeholder texture.
   const texture = device.createTexture({
     size: [1, 1, 1],
     format: 'rgba8unorm',
@@ -102,6 +122,8 @@ const loadRocketTexture = function(device: GPUDevice, textureUrl: string): Textu
       let levelWidth = imageBitmap.width;
       let levelHeight = imageBitmap.height;
       let level = 0;
+      
+      // Scale down and copy each mipmap level.
       while (levelWidth >= 1 && levelHeight >= 1) {
         canvas.width = levelWidth;
         canvas.height = levelHeight;
@@ -126,6 +148,11 @@ const loadRocketTexture = function(device: GPUDevice, textureUrl: string): Textu
   return wrapper;
 };
 
+/**
+ * RocketManager oversees rendering the 3D rocket model, compiling WebGPU pipelines
+ * for the PBR metallic/roughness rocket body and the additive exhaust flame cylinder,
+ * and maintaining a 6-face environment cubemap.
+ */
 export class RocketManager {
   private model: Model;
   private cameraView: CameraView;
@@ -179,6 +206,7 @@ export class RocketManager {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
     });
 
+    // Create 6 uniform buffers, one for each face of the environment reflection cubemap.
     this.envMapUniformBuffers = [];
     for (let i = 0; i < 6; ++i) {
       this.envMapUniformBuffers.push(this.device.createBuffer({
@@ -187,6 +215,7 @@ export class RocketManager {
       }));
     }
 
+    // Trigger asynchronous texture asset loads.
     this.baseColorTextureWrapper = loadRocketTexture(this.device, 'rocket_base_color.png');
     this.occlusionRoughnessMetallicTextureWrapper = loadRocketTexture(this.device, 'rocket_occlusion_roughness_metallic.png');
     this.normalMapTextureWrapper = loadRocketTexture(this.device, 'rocket_normal.png');
@@ -202,15 +231,18 @@ export class RocketManager {
     this.exhaustIndexBuffer = null;
     this.exhaustIndexCount = 0;
 
+    // Build GPURenderPipelines.
     this.createEnvMapTexture();
     this.createRocketPipeline();
     this.createExhaustPipeline();
     this.createMipmapPipeline();
 
+    // Load geometry.
     loadRocketMesh('rocket.dat', (vertices, indices) => this.createRocketBuffers(vertices, indices));
     this.createExhaustBuffers();
   }
 
+  /** Allocates the 3D Cubemap texture that holds local environment reflections. */
   private createEnvMapTexture(): void {
     this.envMapTexture = this.device.createTexture({
       label: 'RocketEnvMapCubeTexture',
@@ -221,6 +253,7 @@ export class RocketManager {
     });
   }
 
+  /** Builds the main PBR rendering pipeline for the rocket body mesh. */
   private createRocketPipeline(): void {
     this.rocketBindGroupLayout = this.device.createBindGroupLayout({
       label: 'RocketBindGroupLayout',
@@ -248,13 +281,14 @@ export class RocketManager {
         module: rocketShaderModule,
         entryPoint: 'vert_main',
         buffers: [{
+          // Attribute layout mapping vertex values in rocket.dat
           arrayStride: 52,
           attributes: [
-            { shaderLocation: 0, offset: 0, format: 'float32x3' as GPUVertexFormat },
-            { shaderLocation: 1, offset: 12, format: 'float32x3' as GPUVertexFormat },
-            { shaderLocation: 2, offset: 24, format: 'float32x4' as GPUVertexFormat },
-            { shaderLocation: 3, offset: 40, format: 'float32x2' as GPUVertexFormat },
-            { shaderLocation: 4, offset: 48, format: 'float32' as GPUVertexFormat }
+            { shaderLocation: 0, offset: 0, format: 'float32x3' as GPUVertexFormat },  // position
+            { shaderLocation: 1, offset: 12, format: 'float32x3' as GPUVertexFormat }, // normal
+            { shaderLocation: 2, offset: 24, format: 'float32x4' as GPUVertexFormat }, // tangent
+            { shaderLocation: 3, offset: 40, format: 'float32x2' as GPUVertexFormat }, // uv
+            { shaderLocation: 4, offset: 48, format: 'float32' as GPUVertexFormat }    // extra data
           ]
         }]
       },
@@ -276,6 +310,10 @@ export class RocketManager {
     });
   }
 
+  /**
+   * Builds pipelines for rendering the translucent additive engine exhaust flame.
+   * Compiles separate front-face and back-face culling passes to avoid sorting artifacts.
+   */
   private createExhaustPipeline(): void {
     this.exhaustBindGroupLayout = this.device.createBindGroupLayout({
       label: 'ExhaustBindGroupLayout',
@@ -309,6 +347,7 @@ export class RocketManager {
         entryPoint: 'frag_main',
         targets: [{
           format: 'rgba16float' as GPUTextureFormat,
+          // Set up additive color/alpha blending rules to compile natural lighting effects.
           blend: {
             color: { srcFactor: 'one' as GPUBlendFactor, dstFactor: 'one' as GPUBlendFactor, operation: 'add' as GPUBlendOperation },
             alpha: { srcFactor: 'one' as GPUBlendFactor, dstFactor: 'one' as GPUBlendFactor, operation: 'add' as GPUBlendOperation }
@@ -322,7 +361,7 @@ export class RocketManager {
       },
       depthStencil: {
         format: 'depth24plus' as GPUTextureFormat,
-        depthWriteEnabled: false,
+        depthWriteEnabled: false, // Transparent exhaust does not lock/write depth
         depthCompare: 'less' as GPUCompareFunction
       }
     });
@@ -339,6 +378,7 @@ export class RocketManager {
     });
   }
 
+  /** Pipeline for downsampling individual faces in the envmap mipmap chain. */
   private createMipmapPipeline(): void {
     this.mipmapBindGroupLayout = this.device.createBindGroupLayout({
       label: 'MipmapDownsampleBindGroupLayout',
@@ -383,6 +423,9 @@ export class RocketManager {
     this.rocketIndexCount = indices.length;
   }
 
+  /**
+   * Generates a procedurally tessellated double-walled cylinder representing the exhaust plume volume.
+   */
   private createExhaustBuffers(): void {
     const NUM_CIRCUMFERENCE_SAMPLES = 32;
 
@@ -390,9 +433,13 @@ export class RocketManager {
     for (let i = 0; i <= NUM_CIRCUMFERENCE_SAMPLES; ++i) {
       const r = i == 0 ? 0 : EXHAUST_RADIUS;
       const alpha = (2 * Math.PI * i) / NUM_CIRCUMFERENCE_SAMPLES;
+      
+      // Base circle vertices at EXHAUST_Z_MIN
       vertices[6 * i] = r * Math.cos(alpha); 
       vertices[6 * i + 1] = r * Math.sin(alpha); 
       vertices[6 * i + 2] = EXHAUST_Z_MIN;
+      
+      // Peak circle vertices at EXHAUST_Z_MAX
       vertices[6 * i + 3] = r * Math.cos(alpha); 
       vertices[6 * i + 4] = r * Math.sin(alpha); 
       vertices[6 * i + 5] = EXHAUST_Z_MAX;     
@@ -405,6 +452,7 @@ export class RocketManager {
     });
     this.device.queue.writeBuffer(this.exhaustVertexBuffer, 0, vertices);
 
+    // Build index arrays for triangulation.
     const indices = new Uint32Array(12 * NUM_CIRCUMFERENCE_SAMPLES);
     for (let i = 1; i <= NUM_CIRCUMFERENCE_SAMPLES; ++i) {
       const j = (i % NUM_CIRCUMFERENCE_SAMPLES) + 1;
@@ -437,6 +485,7 @@ export class RocketManager {
     const metallic = this.occlusionRoughnessMetallicTextureWrapper.texture;
     const normal = this.normalMapTextureWrapper.texture;
 
+    // Cache bind groups to bypass expensive allocations if textures are unchanged.
     if (this.rocketBindGroup &&
         this.cachedBaseColor === baseColor &&
         this.cachedMetallic === metallic &&
@@ -463,6 +512,9 @@ export class RocketManager {
     return this.rocketBindGroup;
   }
 
+  /**
+   * Retreives/creates the set of 6 BindGroups linking resources for the environment map rendering.
+   */
   private getEnvMapBindGroups(): GPUBindGroup[] | null {
     const tm = this.cameraView.textureManager;
     const skyTexture = this.model.grid.getValue() ? tm.gridTexture : tm.galaxyTexture;
@@ -500,12 +552,16 @@ export class RocketManager {
     return this.envMapBindGroups;
   }
 
+  /**
+   * Packs Schwarzschild and frame variables into the uniform float32 buffer
+   * prior to rendering a face of the local environment map.
+   */
   private updateEnvMapUniforms(faceIndex: number, eW: number[], eH: number[], eD: number[]): void {
     const model = this.model;
     const data = new Float32Array(108);
 
-    data[0] = model.t;
-    data[1] = model.r;
+    data[0] = model.t; // proper time tau
+    data[1] = model.r; // radial coordinate r
     data[2] = model.worldTheta;
     data[3] = model.worldPhi;
 
@@ -519,11 +575,13 @@ export class RocketManager {
     data[10] = model.kS[2];
     data[11] = model.kS[3];
 
+    // Four-velocity of the rocket.
     data[12] = model.rocketTau[1];
     data[13] = model.rocketTau[2];
     data[14] = model.rocketTau[3];
     data[15] = 0.0;
 
+    // Basis frame coordinate projections.
     data[16] = eW[0];
     data[17] = eW[1];
     data[18] = eW[2];
@@ -539,6 +597,7 @@ export class RocketManager {
     data[26] = eD[2];
     data[27] = 0.0;
 
+    // Starfield coordinate rotation matrix.
     data[28] = model.starsMatrix[0];
     data[29] = model.starsMatrix[3];
     data[30] = model.starsMatrix[6];
@@ -587,7 +646,12 @@ export class RocketManager {
     this.device.queue.writeBuffer(this.envMapUniformBuffers[faceIndex], 0, data);
   }
 
+  /**
+   * Computes the final Model-View-Projection (MVP) matrix and camera position vector,
+   * outputting it in column-major order to load directly into WebGPU structures.
+   */
   private setCameraUniforms(modelViewProjMatrix: Float32Array, cameraPos: Float32Array): void {
+    // Resolve pitch and yaw offsets from the rocket heading.
     const yaw = this.model.cameraYaw.getValue() + this.model.cameraYawOffset -
         this.model.rocketYaw;
     const cameraDist = this.model.rocketDistance.getValue() / 2;
@@ -598,6 +662,8 @@ export class RocketManager {
     const sy = Math.sin(yaw);
     const cp = Math.cos(this.model.cameraPitch.getValue());
     const sp = Math.sin(this.model.cameraPitch.getValue());
+    
+    // Model-View Matrix mapping model spaces to local camera relative views.
     const modelViewMatrix = [
       [      cy,  0,      -sy,                    cy * tx      - sy * tz],
       [-sy * sp, cp, -cy * sp,             - sy * sp * tx - cy * sp * tz],
@@ -605,6 +671,7 @@ export class RocketManager {
       [       0,  0,        0,                                         1]
     ];
 
+    // Standard perspective projection matrix setup.
     const f = 1 / Math.tan(this.model.fovY / 2);
     const a = this.cameraView.canvas.width / this.cameraView.canvas.height;
     const b = -(FAR_PLANE + NEAR_PLANE) / (FAR_PLANE - NEAR_PLANE);
@@ -616,6 +683,7 @@ export class RocketManager {
       [    0, 0, -1, 0]
     ];
 
+    // Multiply matrices: MVP = Projection * ModelView
     const mvp = new Float32Array(16);
     for (let i = 0; i < 4; ++i) {
       for (let j = 0; j < 4; ++j) {
@@ -623,11 +691,12 @@ export class RocketManager {
         for (let k = 0; k < 4; ++k) {
           val += projMatrix[i][k] * modelViewMatrix[k][j];
         }
-        mvp[j * 4 + i] = val;
+        mvp[j * 4 + i] = val; // Write in column-major indexing
       }
     }
     modelViewProjMatrix.set(mvp);
 
+    // Compute the camera origin coordinate in world space by inverting translation.
     const camera = [0, 0, 0];
     for (let i = 0; i < 3; ++i) {
       for (let j = 0; j < 3; ++j) {
@@ -639,11 +708,16 @@ export class RocketManager {
     cameraPos[2] = camera[2];
   }
 
+  /**
+   * Renders the surrounding black hole raymarched environment onto the 6 faces
+   * of the local cubemap texture, and then downsamples it to compile all mipmap levels.
+   */
   renderEnvMap(commandEncoder: GPUCommandEncoder): void {
     const model = this.model;
     const envMapBindGroups = this.getEnvMapBindGroups();
     if (!envMapBindGroups) return;
 
+    // Spatial orientation axis configurations for each cube face relative to rocket basis.
     const faces = [
       {
         eW: [-model.rocketD[1], -model.rocketD[2], -model.rocketD[3]],
@@ -677,6 +751,7 @@ export class RocketManager {
       }
     ];
 
+    // Render pass 1: Raymarch the base resolution (Mip Level 0) for each of the 6 faces.
     for (let face = 0; face < 6; ++face) {
       this.updateEnvMapUniforms(face, faces[face].eW, faces[face].eH, faces[face].eD);
 
@@ -702,6 +777,7 @@ export class RocketManager {
       passEncoder.end();
     }
 
+    // Render pass 2: Procedurally downsample levels 1 to ENV_MAP_LEVELS.
     for (let level = 1; level < ENV_MAP_LEVELS; ++level) {
       const size = ENV_MAP_SIZE >> level;
       for (let face = 0; face < 6; ++face) {
@@ -712,7 +788,7 @@ export class RocketManager {
               binding: 0,
               resource: this.envMapTexture.createView({
                 dimension: '2d',
-                baseMipLevel: level - 1,
+                baseMipLevel: level - 1, // sample the higher-resolution level
                 mipLevelCount: 1,
                 baseArrayLayer: face,
                 arrayLayerCount: 1
@@ -727,7 +803,7 @@ export class RocketManager {
           colorAttachments: [{
             view: this.envMapTexture.createView({
               dimension: '2d',
-              baseMipLevel: level,
+              baseMipLevel: level, // render into the lower-resolution level
               mipLevelCount: 1,
               baseArrayLayer: face,
               arrayLayerCount: 1
@@ -746,11 +822,13 @@ export class RocketManager {
     }
   }
 
+  /** Renders the main rocket body mesh. */
   drawRocket(passEncoder: GPURenderPassEncoder): void {
     if (!this.rocketVertexBuffer || this.rocketIndexCount === 0) return;
     const bindGroup = this.getRocketBindGroup();
     if (!bindGroup) return;
 
+    // Upload camera matrices and vectors.
     const data = new Float32Array(20);
     this.setCameraUniforms(data.subarray(0, 16), data.subarray(16, 19));
     this.device.queue.writeBuffer(this.rocketUniformBuffer, 0, data);
@@ -762,12 +840,19 @@ export class RocketManager {
     passEncoder.drawIndexed(this.rocketIndexCount, 1, 0, 0, 0);
   }
 
+  /**
+   * Renders the rocket engine exhaust plume volume with additive transparency.
+   * Runs dual draw calls: rendering back-faces first, then front-faces,
+   * resulting in a layered glow effect.
+   */
   drawExhaust(passEncoder: GPURenderPassEncoder, tauSeconds: number, gForce: number): void {
     if (!this.exhaustVertexBuffer || this.exhaustIndexCount === 0) return;
 
+    // Scale engine flame intensity based on current acceleration (gForce).
     const intensityVal = 0.1 * Math.pow(gForce, 0.75);
     const intensity = [46 / 255 * intensityVal, 176 / 255 * intensityVal, intensityVal];
 
+    // Compute oscillating engine flicker frequencies to animate flame volume.
     const time = tauSeconds * 100.0;
     const kR1 = 6.75 + 0.5 * Math.cos(time);
     const kR2 = 5.75 + 0.5 * Math.cos((time + 1) / Math.sqrt(2));
@@ -797,11 +882,14 @@ export class RocketManager {
     passEncoder.setVertexBuffer(0, this.exhaustVertexBuffer);
     passEncoder.setIndexBuffer(this.exhaustIndexBuffer!, 'uint32');
 
+    // 1. Draw back-faces of the cylinder first
     passEncoder.setBindGroup(0, this.exhaustBindGroup);
     passEncoder.setPipeline(this.exhaustPipelineBack);
     passEncoder.drawIndexed(this.exhaustIndexCount, 1, 0, 0, 0);
 
+    // 2. Draw front-faces of the cylinder second
     passEncoder.setPipeline(this.exhaustPipelineFront);
     passEncoder.drawIndexed(this.exhaustIndexCount, 1, 0, 0, 0);
   }
 }
+

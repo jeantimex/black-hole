@@ -1,32 +1,84 @@
+/**
+ * @file shader_manager.ts
+ * @brief Manages WebGL shader program compilation, macro options injection, and procedural accretion disk ring parameters.
+ *
+ * Physics & Mathematics:
+ *
+ * Relativistic Precession in Schwarzschild Geometry:
+ * - Orbiting dust particles in the accretion disk follow geodesics. In general relativity, orbits around a
+ *   black hole are not closed ellipses (like in Newtonian gravity); they exhibit relativistic precession (similar to Mercury's perihelion shift, but much stronger).
+ * - The orbit path in terms of inverse radius coordinate u(\theta) satisfies:
+ *     d\theta/du = 1 / \sqrt{2u^3 - u^2 + (M/L^2)u - (E^2-1)/2L^2}
+ * - For bound eccentric orbits oscillating between minimum radius r_1 (maximum inverse radius u_2 = 1/r_1)
+ *   and maximum radius r_2 (minimum inverse radius u_1 = 1/r_2), the equation of motion is written as:
+ *     (du/d\theta)^2 = (u - u_1) * (u_2 - u) * (u_3 - u)
+ *   where:
+ *     - u_1, u_2 are the turning points (roots of the radial velocity equation).
+ *     - u_3 = 1 - u_1 - u_2 is the third root of the cubic geodesic polynomial.
+ * - The precession angle (change in angular coordinate \theta per radial oscillation cycle) is given by:
+ *     \Delta\theta = 2 \int_{u_1}^{u_2} \frac{du}{\sqrt{(u - u_1)(u_2 - u)(u_3 - u)}}
+ *   By making the substitution y^2 = (u - u_1)/(u_2 - u_1), this integral is converted to the complete elliptic integral
+ *   of the first kind K(k^2):
+ *     \Delta\theta = \frac{4}{\sqrt{u_3 - u_1}} \int_0^1 \frac{dy}{\sqrt{(1 - y^2)(1 - k^2 y^2)}} = \frac{4 K(k^2)}{\sqrt{u_3 - u_1}}
+ *   where the elliptic modulus squared is:
+ *     k^2 = (u_2 - u_1) / (u_3 - u_1)
+ * - The orbital precession ratio (frequency ratio of radial to angular motion) is:
+ *     d\theta / d\phi = \frac{\pi}{\Delta\theta} = \frac{\pi \sqrt{u_3 - u_1}}{4 K(k^2)}
+ * - In `computeDthetaDphi`, we solve the elliptic integral K(k^2) numerically using the midpoint rule with N = 100,000 steps.
+ *
+ * Procedural Disk Rings Generation:
+ * - Accretion disk dust is generated as concentric rings from r_min = 3.0 (the ISCO boundary) to r_max = 12.0.
+ * - Each ring is given a slight eccentricity e \in [0, 0.1] and random initial phase \phi_0.
+ * - The computed parameters (u_1, u_2, \phi_0, d\theta/d\phi) are formatted and injected as a constant array
+ *   `DISC_PARTICLE_PARAMS` directly into the GLSL fragment shader source before compilation.
+ */
+
 import { Model } from '../../common/model';
 import { TextureManager } from './texture_manager';
 
 const MAX_STAR_TEXTURE_LOD = 6;
 
+/**
+ * @brief Generates procedural accretion disk particle configurations.
+ * @details Computes orbital parameters and relativistic precession rates for individual rings,
+ *          returning them as a stringified GLSL array block.
+ */
 const generateDiscParticleParams = function(): string {
-  const rMin = 3.0;
-  const rMax = 12.0;
+  const rMin = 3.0; // Inner disk boundary (ISCO)
+  const rMax = 12.0; // Outer disk boundary
+  
+  /**
+   * @brief Numerically computes the complete elliptic integral of the first kind K(k^2).
+   * @param u1 Root 1 (minimum inverse radius).
+   * @param u2 Root 2 (maximum inverse radius).
+   * @param u3 Root 3 of cubic geodesic polynomial.
+   * @return Relativistic precession ratio dtheta/dphi.
+   */
   const computeDthetaDphi = function(u1: number, u2: number, u3: number): number {
-    const k2 = (u2 - u1) / (u3 - u1);
+    const k2 = (u2 - u1) / (u3 - u1); // Modulus k^2 of the elliptic integral
     const N = 100000;
     let K = 0.0;
+    
+    // Midpoint Riemann sum calculation of K(k^2) = \int_0^1 1 / \sqrt{(1-y^2)(1-k^2 y^2)} dy
     for (let i = 0; i < N; ++i) {
       const dy = 1.0 / N;
       const y = (i + 0.5) / N;
       K += dy / Math.sqrt((1 - y * y) * (1 - k2 * y * y));
     }
+    
+    // Precession ratio: d\theta/d\phi = \pi \sqrt{u_3 - u_1} / 4K
     return Math.PI * Math.sqrt(u3 - u1) / (4 * K);
   };
 
   let ringParams = '';
   let numRings = 0;
   for (let r1 = rMin; r1 < rMax; r1 += 0.75) {
-    const e = 0.1 * Math.random();
+    const e = 0.1 * Math.random(); // Orbital eccentricity
     const r2 = r1 * (1.0 + e) / (1.0 - e);
     const u1 = 1 / r2;
     const u2 = 1 / r1;
-    const u3 = 1 - u1 - u2;
-    const phi0 = 2 * Math.PI * Math.random();
+    const u3 = 1 - u1 - u2; // Third root in normalized general relativity coordinates
+    const phi0 = 2 * Math.PI * Math.random(); // Random orbital starting phase
     const dThetaDphi = computeDthetaDphi(u1, u2, u3);
 
     const x = u1.toPrecision(3);
@@ -37,6 +89,7 @@ const generateDiscParticleParams = function(): string {
     numRings += 1;
   }
 
+  // Format array definition string to inject into GLSL source
   return `
       const float INNER_DISC_R = ${rMin.toPrecision(3)};
       const float OUTER_DISC_R = ${rMax.toPrecision(3)};
@@ -46,6 +99,9 @@ const generateDiscParticleParams = function(): string {
       );`;
 };
 
+/**
+ * @brief Helper utility to compile a shader and log detailed compilation errors.
+ */
 const createShader = function(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
   const shader = gl.createShader(type);
   if (!shader) throw new Error("Could not create WebGL shader");
@@ -98,6 +154,11 @@ export class ShaderManager {
     this.program = null;
   }
 
+  /**
+   * @brief Dynamically selects or compiles the shader program based on active rendering settings.
+   * @details Macro options (LENSING, DOPPLER, GRID, STARS) are prepended to the fragment shader.
+   *          This triggers recompilation when features are toggled, preventing branches inside the rendering loop.
+   */
   getProgram(): WebGLDemoProgram | null {
     const options =
         `#define LENSING ${this.model.lensing.getValue() ? 1 : 0}
@@ -112,6 +173,7 @@ export class ShaderManager {
       return this.program;
     }
 
+    // Build the GLSL header including uniform dimensions and settings macros
     const header = 
         `#version 300 es
         precision highp float;
@@ -150,6 +212,8 @@ export class ShaderManager {
         precision highp float;
         ${vertexShaderEl.innerHTML}`);
 
+    // Assemble and compile fragment shader: Injecting header configuration,
+    // procedural disk parameters, core library functions, and final composite logic
     const fragmentShader = createShader(
         gl,
         gl.FRAGMENT_SHADER,
@@ -170,6 +234,7 @@ export class ShaderManager {
       console.error("Program link error:", log);
     }
     
+    // Store attribute and uniform bindings
     program.vertexAttrib = gl.getAttribLocation(program, 'vertex');
     program.cameraSize = gl.getUniformLocation(program, 'camera_size');
     program.cameraPosition = gl.getUniformLocation(program, 'camera_position');

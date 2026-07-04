@@ -1,3 +1,43 @@
+/**
+ * @file bloom.ts
+ * @brief High-Dynamic Range (HDR) Bloom post-processing effect using downsampling/upsampling pyramids.
+ *
+ * Architecture & Mathematics of Dual Filtering Bloom:
+ * - Bloom simulates the physical lens-flare/light-bleeding effect of bright light sources in high-contrast scenes.
+ * - To perform this in real-time, we construct a texture pyramid (mipmap chain) of the source HDR frame.
+ *
+ * 1. Downsampling Phase (Binomial Tent Filter):
+ *    - We reduce resolution progressively by factor of 2.
+ *    - To avoid aliasing (pixel flickering) on high-frequency details, we use a 4x4 filter kernel.
+ *    - The filter weights are derived from the tensor product of 1D binomial coefficients:
+ *        W_{2D} = \frac{1}{8}[1, 3, 3, 1] \otimes \frac{1}{8}[1, 3, 3, 1]
+ *      which approximates a smooth Gaussian kernel.
+ *    - The output HDR colors are clamped to float16 range limits (`MAX_FLOAT16` = 65500) to prevent NaN/overflow.
+ *
+ * 2. Bloom Filtering Phase:
+ *    - A 5x5 convolution blur is applied at each pyramid level using precomputed Gaussian weights (derived from
+ *      the physical line-spread function of the human eye, specified in `BLOOM_FILTERS` array).
+ *    - This simulates the scattering (diffraction) of light in the ocular media.
+ *
+ * 3. Upsampling Phase (Bilinear Tent Filter):
+ *    - We upsample and accumulate the blurred frames from the bottom (lowest resolution) of the pyramid to the top.
+ *    - Tent filter weights are defined in the shader code:
+ *        W = \frac{1}{16} \begin{pmatrix} 9 & 3 \\ 3 & 1 \end{pmatrix} (bilinear interpolation weights).
+ *    - Additive blending (`gl.blendFunc(gl.ONE, gl.ONE)`) accumulates bloom radiance from all scales.
+ *
+ * 4. Tone Mapping Phase (ACES or Exponential):
+ *    - High-range radiance is converted to standard dynamic range (SDR) display colors.
+ *    - ACES Filmic Tone Mapping Curve:
+ *        f(x) = \frac{x * (A * x + B)}{x * (C * x + D) + E}
+ *        where A = 2.51, B = 0.03, C = 2.43, D = 0.59, E = 0.14.
+ *        This mimics film response, producing high-contrast black points and pleasing highlight roll-offs.
+ *    - Exponential Tone Mapping:
+ *        f(x) = 1.0 - \exp(-x * \text{exposure})
+ *    - Gamma correction is applied using a 2.2 exponent curve: C_{out} = C^{1 / 2.2}.
+ */
+
+// Array containing precomputed eye-spread function kernels at different screen resolutions.
+// These coefficients model the optical diffraction pattern (PSF) of the human eye.
 const BLOOM_FILTERS: (number | number[][])[] = [
   600,
   [[0.537425,0.0200663,0.00720805,0.00159719,0.000907315,0.000275641],
@@ -61,14 +101,19 @@ const BLOOM_FILTERS: (number | number[][])[] = [
    [0.00247558,0.00247558,0.00247558,0.00247558,0.00247558,0.00247558]],
 ];
 
+// Maximum number of texture downsampling levels
 const MAX_LEVELS = 9;
+
+// Maximum float value supported in float16 texture buffers to prevent saturation anomalies
 const MAX_FLOAT16 = '6.55e4';
 
+// Vertices pass-through shader for drawing the screen-spanning quad
 const VERTEX_SHADER =
   `#version 300 es
   layout(location=0) in vec4 vertex;
   void main() { gl_Position = vertex; }`;
 
+// Downsampling fragment shader using a 4x4 binomial filter kernel
 const DOWNSAMPLE_SHADER =
   `#version 300 es
   precision highp float;
@@ -92,6 +137,7 @@ const DOWNSAMPLE_SHADER =
     frag_color = vec4(min(color, ${MAX_FLOAT16}), 1.0);
   }`;
 
+// Bloom blur fragment shader executing a 5x5 convolution blur
 const BLOOM_SHADER =
   `#version 300 es
   precision highp float;
@@ -109,6 +155,7 @@ const BLOOM_SHADER =
     frag_color = vec4(min(color, ${MAX_FLOAT16}), 1.0);
   }`;
 
+// Upsampling fragment shader performing bilinear tent interpolation blending
 const UPSAMPLE_SHADER =
   `#version 300 es
   precision highp float;
@@ -134,6 +181,7 @@ const UPSAMPLE_SHADER =
     frag_color = vec4(min(color, ${MAX_FLOAT16}), 1.0);
   }`;
 
+// Final composite rendering fragment shader with ACES filmic or exponential tone mapping
 const RENDER_SHADER =
   `#version 300 es
   precision highp float;
@@ -147,10 +195,12 @@ const RENDER_SHADER =
   uniform bool high_contrast;
   layout(location=0) out vec4 frag_color;
 
+  // Standard exponential tone mapping: T(x) = 1 - e^-x
   vec3 toneMap(vec3 color) {
     return pow(vec3(1.0) - exp(-color), vec3(1.0 / 2.2));
   }
   
+  // ACES Filmic Tone Mapping approximation curve
   vec3 toneMapACES(vec3 color) {
     const float A = 2.51;
     const float B = 0.03;
@@ -178,6 +228,9 @@ const RENDER_SHADER =
     frag_color = vec4(color, 1.0);
   }`;
 
+/**
+ * @brief Helper utility to create and compile a WebGL shader.
+ */
 const createShader = function(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
   const shader = gl.createShader(type);
   if (!shader) throw new Error("Could not create shader");
@@ -186,6 +239,9 @@ const createShader = function(gl: WebGL2RenderingContext, type: number, source: 
   return shader;
 };
 
+/**
+ * @brief Helper utility to create and configure a WebGL texture.
+ */
 const createTexture = function(gl: WebGL2RenderingContext, textureUnit: number, target: number): WebGLTexture {
   const texture = gl.createTexture();
   if (!texture) throw new Error("Could not create texture");
@@ -237,10 +293,12 @@ export class Bloom {
     this.width = width;
     this.height = height;
 
+    // Enable floating point color attachments and blending extensions
     gl.getExtension('OES_texture_float_linear');
     gl.getExtension('EXT_color_buffer_float');
     gl.getExtension('EXT_float_blend');
 
+    // Create a screen quad vertex buffer
     this.vertexBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, +1, -1, -1, +1, +1, +1]), gl.STATIC_DRAW);
@@ -256,21 +314,25 @@ export class Bloom {
       return p;
     };
 
+    // Initialize Downsample Shader Program
     this.downsampleProgram = createAndLinkProgram(DOWNSAMPLE_SHADER);
     gl.useProgram(this.downsampleProgram);
     gl.uniform1i(gl.getUniformLocation(this.downsampleProgram, 'source'), 0);
     this.downsampleProgram.sourceDeltaUvUniform = gl.getUniformLocation(this.downsampleProgram, 'source_delta_uv');
 
+    // Initialize Bloom Blur Shader Program (5x5 filter kernel size = 25 samples)
     this.bloomProgram = createAndLinkProgram(BLOOM_SHADER.replace(/SIZE/g, '25'));
     gl.useProgram(this.bloomProgram);
     gl.uniform1i(gl.getUniformLocation(this.bloomProgram, 'source'), 0);
     this.bloomProgram.sourceDeltaUvUniform = gl.getUniformLocation(this.bloomProgram, 'source_delta_uv');
 
+    // Initialize Upsample Shader Program
     this.upsampleProgram = createAndLinkProgram(UPSAMPLE_SHADER);
     gl.useProgram(this.upsampleProgram);
     gl.uniform1i(gl.getUniformLocation(this.upsampleProgram, 'source'), 0);
     this.upsampleProgram.sourceDeltaUvUniform = gl.getUniformLocation(this.upsampleProgram, 'source_delta_uv');
 
+    // Initialize Final Composite Rendering Shader Program
     this.renderProgram = createAndLinkProgram(RENDER_SHADER.replace(/SIZE/g, '25'));
     gl.useProgram(this.renderProgram);
     gl.uniform1i(gl.getUniformLocation(this.renderProgram, 'source'), 0);
@@ -286,6 +348,7 @@ export class Bloom {
     this.filterTextures = [];
     this.bloomFilters = [];
 
+    // Allocate textures for downsampling and upsampling mipmap levels
     for (let i = 0; i < MAX_LEVELS; ++i) {
       const mipmapTexture = createTexture(gl, gl.TEXTURE0, gl.TEXTURE_2D);
       this.mipmapTextures.push({ texture: mipmapTexture, width: 0, height: 0 });
@@ -305,6 +368,7 @@ export class Bloom {
     this.filterFbos = [];
     this.depthBuffer = null;
 
+    // Attach allocated textures to framebuffers
     for (let i = 0; i < MAX_LEVELS; ++i) {
       const mipmapFbo = gl.createFramebuffer();
       if (!mipmapFbo) throw new Error("Could not create framebuffer");
@@ -321,6 +385,7 @@ export class Bloom {
           gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, filterTex.texture, 0);
         }
       } else {
+        // Allocate depth buffer for the base level
         this.depthBuffer = gl.createRenderbuffer();
         gl.bindRenderbuffer(gl.RENDERBUFFER, this.depthBuffer);
         gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, this.mipmapTextures[0].width, this.mipmapTextures[0].height);
@@ -333,6 +398,9 @@ export class Bloom {
     this.resize(width, height);
   }
 
+  /**
+   * @brief Resizes textures and recalculates bloom filter weights based on new viewport size.
+   */
   resize(width: number, height: number): void {
     this.width = width;
     this.height = height;
@@ -343,6 +411,7 @@ export class Bloom {
     let w = width;
     let h = height;
 
+    // Reallocate mipmap dimensions. Keep textures slightly padded (+2) to support bilinear samples safely.
     while (h > 2 && level < MAX_LEVELS) {
       const mipmapTex = this.mipmapTextures[level];
       gl.bindTexture(gl.TEXTURE_2D, mipmapTex.texture);
@@ -367,6 +436,7 @@ export class Bloom {
     }
     this.numLevels = level;
 
+    // Find the precomputed bloom kernel matches closest to current viewport height
     this.bloomFilters = [];
     let nearest_size_index = 0;
     let nearest_size = BLOOM_FILTERS[nearest_size_index] as number;
@@ -378,6 +448,7 @@ export class Bloom {
       }
     }
 
+    // Populate bloom filter textures offsets and weights for 5x5 convolution blur
     const filters = BLOOM_FILTERS[nearest_size_index + 1] as number[][];
     for (let i = 0; i < this.numLevels; ++i) {
       const bloomFilter: number[][] = [];
@@ -389,6 +460,7 @@ export class Bloom {
           const ix = Math.abs(x);
           const index = ix < iy ? (iy * (iy + 1)) / 2 + ix : (ix * (ix + 1)) / 2 + iy;
           const wt = filters[i][index];
+          // Store uv offset and weight
           bloomFilter.push([x / mWidth, y / mHeight, wt]);
         }
       }
@@ -396,16 +468,24 @@ export class Bloom {
     }
   }
 
+  /**
+   * @brief Prepares the WebGL state to record the high-range scene rendering.
+   */
   begin(): void {
     const gl = this.gl;
+    // Bind base FBO (Level 0)
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.mipmapFbos[0]);
     gl.viewport(1, 1, this.mipmapTextures[0].width - 2, this.mipmapTextures[0].height - 2);
   }
 
+  /**
+   * @brief Executes downsampling, bloom blurs, upsampling pyramid, and tone mapping passes.
+   */
   end(intensity: number, exposure: number, highContrast: boolean): void {
     const gl = this.gl;
     gl.activeTexture(gl.TEXTURE0);
 
+    // --- Downsampling Pyramid Construction ---
     let program = this.downsampleProgram;
     gl.useProgram(program);
     for (let level = 1; level < this.numLevels; ++level) {
@@ -421,6 +501,7 @@ export class Bloom {
       this.drawQuad(program);
     }
 
+    // --- Bloom Convolution Blur Pass ---
     program = this.bloomProgram;
     gl.useProgram(program);
     for (let level = 1; level < this.numLevels; ++level) {
@@ -434,6 +515,7 @@ export class Bloom {
             1.0 / this.mipmapTextures[level].width,
             1.0 / this.mipmapTextures[level].height);
       }
+      // Send 25 precomputed filter sample weights and offsets
       for (let i = 0; i < 25; ++i) {
         gl.uniform3f(gl.getUniformLocation(program, `source_samples_uvw[${i}]`),
             this.bloomFilters[level][i][0],
@@ -443,11 +525,12 @@ export class Bloom {
       this.drawQuad(program);
     }
 
+    // --- Upsampling and Accumulation Pass ---
     program = this.upsampleProgram;
     gl.activeTexture(gl.TEXTURE0);
     gl.enable(gl.BLEND);
     gl.blendEquation(gl.FUNC_ADD);
-    gl.blendFunc(gl.ONE, gl.ONE);
+    gl.blendFunc(gl.ONE, gl.ONE); // Additive blending for light leakage accumulation
     gl.useProgram(program);
     for (let level = this.numLevels - 2; level >= 1; --level) {
       const targetTexture = this.filterTextures[level];
@@ -467,13 +550,18 @@ export class Bloom {
     }
     gl.disable(gl.BLEND);
 
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    // --- Final Composite and Tone Mapping Pass ---
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null); // Render directly to the screen/canvas backbuffer
     gl.viewport(0, 0, this.width, this.height);
 
     program = this.renderProgram;
     gl.useProgram(program);
+    
+    // Bind original scene texture
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.mipmapTextures[0].texture);
+    
+    // Bind accumulated bloom texture
     gl.activeTexture(gl.TEXTURE1);
     const filterTex1 = this.filterTextures[1];
     if (filterTex1) {
@@ -500,9 +588,13 @@ export class Bloom {
     if (program.intensityUniform) gl.uniform1f(program.intensityUniform, intensity);
     if (program.exposureUniform) gl.uniform1f(program.exposureUniform, exposure);
     if (program.highContrastUniform) gl.uniform1i(program.highContrastUniform, highContrast ? 1 : 0);
+    
     this.drawQuad(program);
   }
 
+  /**
+   * @brief Helper to bind screen-quad vertices and execute glDrawArrays.
+   */
   private drawQuad(program: WebGLProgram): void {
     const gl = this.gl;
     const vertexAttrib = gl.getAttribLocation(program, 'vertex');

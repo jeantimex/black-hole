@@ -1,29 +1,104 @@
 // WGSL translation of the Black Hole Ray Tracing shader
+//
+// =====================================================================================
+// PHYSICS & MATHEMATICS BACKGROUND OF THE BLACK HOLE RAYTRACER
+// =====================================================================================
+//
+// 1. SCHWARZSCHILD GEOMETRY & COORDINATES
+// -------------------------------------------------------------------------------------
+// This shader simulates the ray tracing of light in the vicinity of a static, uncharged
+// spherically symmetric black hole of mass M, described by the Schwarzschild metric:
+//
+//   ds² = -(1 - r_s / r) c² dt² + (1 - r_s / r)⁻¹ dr² + r² (dθ² + sin²θ dφ²)
+//
+// where:
+//   - r_s = 2GM/c² is the Schwarzschild radius (normalized to 1.0 in this shader).
+//   - (t, r, θ, φ) are Schwarzschild coordinates.
+//
+// 2. PHOTON GEODESIC EQUATIONS (LIGHT PROPAGATION)
+// -------------------------------------------------------------------------------------
+// Light travels along null geodesics (ds² = 0). Using the Euler-Lagrange equations, we
+// find two constants of motion due to time-translation symmetry and rotational symmetry:
+//   - Relativistic Energy:          E = (1 - r_s / r) dt/dλ
+//   - Relativistic Angular Momentum: L = r² dφ/dλ (assuming equatorial plane θ = π/2)
+//
+// Defining the dimensionless inverse radius u = r_s / r, the geodesic equation is:
+//
+//   (du/dφ)² + u²(1 - u) = (r_s / b)² ≡ e²
+//
+// where:
+//   - b = L/E is the impact parameter (perpendicular distance of the light ray to BH at infinity).
+//   - e² is the inverse squared impact parameter (normalized by r_s²).
+//
+// 3. PHOTON CAPTURE & CRITICAL ORBIT
+// -------------------------------------------------------------------------------------
+// The effective potential has a maximum at r_crit = 1.5 * r_s = 3M (the photon sphere).
+// The critical impact parameter for photon capture is:
+//
+//   b_crit = 3√3 / 2 * r_s ≈ 2.598 * r_s  =>  e²_crit = 4/27 ≈ 0.148148 (kMu in code)
+//
+//   - If e² > 4/27 (b < b_crit): The light ray crosses the photon sphere and falls
+//     into the event horizon (u -> 1).
+//   - If e² < 4/27 (b > b_crit): The light ray reaches a point of closest approach
+//     (periapsis, where du/dφ = 0) and escapes back to infinity.
+//
+// 4. PRECOMPUTED LOOKUP FIELDS (O(1) RUNTIME INTERPOLATION)
+// -------------------------------------------------------------------------------------
+// Integrating the geodesic equation du/dφ at runtime for every pixel is too expensive.
+// Instead, we precompute the integrals and store them in two lookup textures:
+//   - ray_deflection_texture: Maps (e², u) to the total deflection angle Δφ.
+//   - ray_inverse_radius_texture: Maps (e², φ) to the current inverse radius u.
+//
+// This shader decodes these coordinates, samples the textures, and reconstructs
+// the warped geodesics instantaneously.
+//
+// 5. RELATIVISTIC DOPPLER EFFECT & GRAVITATIONAL REDSHIFT
+// -------------------------------------------------------------------------------------
+// The frequency ratio g = ν_observed / ν_emitted is given by the general relativistic
+// projection of the photon's four-momentum p_μ onto the observer's and emitter's four-velocities:
+//
+//   g = (p_μ U^μ)_receiver / (p_μ U^μ)_emitter
+//
+//   - Gravitational Redshift: Relates to the metric coefficient √(-g_tt) = √(1 - r_s/r).
+//   - Kinematic Doppler Shift: Relates to the relative velocity of the accretion disk gas
+//     moving at circular Keplerian speed v = 1 / √(2r - 3) in the static frame.
+//   - Relativistic Beaming (Aberration): Concentrates light in the direction of motion.
+//
+// 6. ACCRETION DISK TEMPERATURE PROFILE (SHAKURA-SUNYAEV / NOVIKOV-THORNE)
+// -------------------------------------------------------------------------------------
+// The accretion disk temperature profile for a thin disk in general relativity is:
+//
+//   T(r) ∝ r⁻³/⁴ (1 - √(3/r))¹/⁴
+//
+// where r = 3 (or 6M in physical units) is the Innermost Stable Circular Orbit (ISCO).
+// Gas inside the ISCO falls rapidly into the black hole and emits negligible radiation.
+//
+// =====================================================================================
 
 struct Uniforms {
-  camera_position: vec4<f32>,
-  p: vec3<f32>,
-  k_s: vec4<f32>,
-  e_tau: vec3<f32>,
-  e_w: vec3<f32>,
-  e_h: vec3<f32>,
-  e_d: vec3<f32>,
-  stars_orientation0: vec4<f32>, // columns of mat3x3 (aligned to vec4)
+  camera_position: vec4<f32>,   // Observer's coordinate state: (t, r, world_theta, world_phi)
+  p: vec3<f32>,                 // Relativistic momentum vector of the observer (3-momentum)
+  k_s: vec4<f32>,               // Four-velocity coefficients / constants of motion of observer
+  e_tau: vec3<f32>,             // Local observer tetrad axis: time-like direction
+  e_w: vec3<f32>,               // Local observer tetrad axis: radial/yaw direction
+  e_h: vec3<f32>,               // Local observer tetrad axis: pitch direction
+  e_d: vec3<f32>,               // Local observer tetrad axis: roll/forward direction
+  stars_orientation0: vec4<f32>, // Columns of rotation matrix for stars background orientation
   stars_orientation1: vec4<f32>,
   stars_orientation2: vec4<f32>,
-  camera_size: vec3<f32>,
-  disc_params: vec3<f32>,
+  camera_size: vec3<f32>,       // Width, Height, Focal Length of the viewport
+  disc_params: vec3<f32>,       // Accretion disk settings: (density, opacity, temperature)
   _pad: f32,
-  exposure: f32,
-  bloom: f32,
-  min_stars_lod: f32,
-  lensing: u32,
-  doppler: u32,
-  grid: u32,
-  stars: u32,
-  high_contrast: u32,
-  fovY: f32,
-  disc_particles: array<vec4<f32>, 12>,
+  exposure: f32,                // Camera exposure multiplier
+  bloom: f32,                   // Bloom intensity factor
+  min_stars_lod: f32,           // Minimum level-of-detail for stars mapping
+  lensing: u32,                 // Toggle boolean for Gravitational Lensing (0 or 1)
+  doppler: u32,                 // Toggle boolean for Relativistic Doppler effect (0 or 1)
+  grid: u32,                    // Toggle boolean for coordinate Grid rendering (0 or 1)
+  stars: u32,                   // Toggle boolean for background Stars rendering (0 or 1)
+  high_contrast: u32,           // Toggle boolean for ACES Film tone mapping (0 or 1)
+  fovY: f32,                    // Field of view in Y direction
+  disc_particles: array<vec4<f32>, 12>, // Accretion disk density perturbation orbits
 };
 
 @group(0) @binding(0) var<uniform> u_uniforms: Uniforms;
@@ -40,13 +115,15 @@ struct Uniforms {
 
 const pi: f32 = 3.14159265359;
 const rad: f32 = 1.0;
-const kMu: f32 = 0.14814814814; // 4.0 / 27.0
+const kMu: f32 = 0.14814814814; // Critical orbit parameter e² = 4/27
+
 const RAY_DEFLECTION_TEXTURE_WIDTH = 512;
 const RAY_DEFLECTION_TEXTURE_HEIGHT = 512;
 const RAY_INVERSE_RADIUS_TEXTURE_WIDTH = 64;
 const RAY_INVERSE_RADIUS_TEXTURE_HEIGHT = 32;
-const INNER_DISC_R = 3.0;
-const OUTER_DISC_R = 12.0;
+
+const INNER_DISC_R = 3.0;  // Innermost stable circular orbit (ISCO) boundary (3 * r_s)
+const OUTER_DISC_R = 12.0; // Outer physical boundary of the accretion disk
 const NUM_DISC_PARTICLES = 12;
 
 struct VertexOutput {
@@ -54,6 +131,8 @@ struct VertexOutput {
   @location(0) view_dir: vec3<f32>,
 };
 
+// Generates screen-aligned quad vertices and sets the initial direction of rays
+// ejected from the camera lens into the relativistic observer's local coordinate frame (tetrad).
 @vertex
 fn vert_main(@builtin(vertex_index) VertexIndex: u32) -> VertexOutput {
   var out: VertexOutput;
@@ -74,6 +153,9 @@ fn modulo2(x: vec2<f32>, y: vec2<f32>) -> vec2<f32> {
   return x - y * floor(x / y);
 }
 
+// Maps the orbit parameter e² (inverse squared impact parameter) to the U-coordinate
+// of the deflection lookup texture. Uses logarithmic mapping to allocate more texels
+// near the critical threshold e² ≈ 4/27 (photon sphere limit) where deflection changes rapidly.
 fn GetRayDeflectionTextureUFromEsquare(e_square: f32) -> f32 {
   if (e_square < kMu) {
     return 0.5 - sqrt(-log(1.0 - e_square / kMu) * (1.0 / 50.0));
@@ -82,11 +164,17 @@ fn GetRayDeflectionTextureUFromEsquare(e_square: f32) -> f32 {
   }
 }
 
+// Computes the Schwarzschild coordinate u of the periapsis (closest approach)
+// for a light ray with parameter e² < 4/27. Obtained by solving du/dφ = 0,
+// which is the root of the cubic equation u²(1 - u) = e².
 fn GetUapsisFromEsquare(e_square: f32) -> f32 {
   let x = (2.0 / kMu) * e_square - 1.0;
   return 1.0 / 3.0 + (2.0 / 3.0) * sin(asin(x) * (1.0 / 3.0));
 }
 
+// Maps the current Schwarzschild coordinate u and parameter e² to the V-coordinate
+// of the deflection lookup texture. Handles unstable orbits (e² > 4/27) and stable
+// orbits (e² < 4/27) differently to ensure maximum texture density in key regions.
 fn GetRayDeflectionTextureVFromEsquareAndU(e_square: f32, u: f32) -> f32 {
   if (e_square > kMu) {
     let x = select(sqrt(u - 2.0 / 3.0), -sqrt(2.0 / 3.0 - u), u < 2.0 / 3.0);
@@ -96,15 +184,18 @@ fn GetRayDeflectionTextureVFromEsquareAndU(e_square: f32, u: f32) -> f32 {
   }
 }
 
+// Converts a normalized range coordinate [0, 1] to texel coordinates,
+// avoiding edge artifacts and clamp clamping by offsetting by half a texel.
 fn GetTextureCoordFromUnitRange(x: f32, texture_size: i32) -> f32 {
   return 0.5 / f32(texture_size) + x * (1.0 - 1.0 / f32(texture_size));
 }
 
 struct DeflectionResult {
-  deflection: vec2<f32>,
-  apsis: vec2<f32>,
+  deflection: vec2<f32>, // (total deflection angle, travel time integral)
+  apsis: vec2<f32>,      // (deflection at closest approach, travel time at closest approach)
 }
 
+// Looks up the deflection and travel time integrals for a light ray from the lookup texture.
 fn LookupRayDeflection(e_square: f32, u: f32) -> DeflectionResult {
   var res: DeflectionResult;
   let tex_u = GetTextureCoordFromUnitRange(
@@ -121,14 +212,18 @@ fn LookupRayDeflection(e_square: f32, u: f32) -> DeflectionResult {
   return res;
 }
 
+// Computes the maximum angular path φ limit for an unstable ray (e² > 4/27)
+// before it crosses the event horizon. Used to map the parameter domain.
 fn GetPhiUbFromEsquare(e_square: f32) -> f32 {
   return (1.0 + e_square) / (1.0 / 3.0 + 2.0 * e_square * sqrt(e_square)) * rad;
 }
 
+// Maps e² to the U-coordinate of the inverse radius (1/r) lookup texture.
 fn GetRayInverseRadiusTextureUFromEsquare(e_square: f32) -> f32 {
   return 1.0 / (1.0 + 6.0 * e_square);
 }
 
+// Reconstructs the inverse radius u (meaning 1/r) of a light ray at a specific deflection angle φ.
 fn LookupRayInverseRadius(e_square: f32, phi: f32) -> vec2<f32> {
   let tex_u = GetTextureCoordFromUnitRange(
     GetRayInverseRadiusTextureUFromEsquare(e_square),
@@ -138,6 +233,7 @@ fn LookupRayInverseRadius(e_square: f32, phi: f32) -> vec2<f32> {
   return textureSampleLevel(ray_inverse_radius_texture, linear_sampler, vec2<f32>(tex_u, tex_v), 0.0).rg;
 }
 
+// Utility function to compute a smooth analytical pulse. Used to anti-alias accretion disk boundaries.
 fn FilteredPulse(edge0: f32, edge1: f32, x: f32, fw_in: f32) -> f32 {
   var fw = max(fw_in, 1e-6);
   let x0 = x - fw * 0.5;
@@ -155,6 +251,8 @@ struct EuclideanResult {
   t1: f32,
 }
 
+// Baseline Euclidean trace calculation (gravitational lensing disabled).
+// Solves light propagation in straight lines to provide a comparison.
 fn TraceRayEuclidean(p_r: f32, delta: f32, alpha: f32, u_ic: f32, u_oc: f32) -> EuclideanResult {
   var res: EuclideanResult;
   let cos_delta = cos(delta);
@@ -179,17 +277,19 @@ fn TraceRayEuclidean(p_r: f32, delta: f32, alpha: f32, u_ic: f32, u_oc: f32) -> 
 }
 
 struct TraceResult {
-  deflection: f32,
-  u0: f32,
-  phi0: f32,
-  t0: f32,
-  alpha0: f32,
-  u1: f32,
-  phi1: f32,
-  t1: f32,
-  alpha1: f32,
+  deflection: f32, // Overall angular deflection of the ray
+  u0: f32,         // First intersection point inverse radius (1/r)
+  phi0: f32,       // First intersection point angle
+  t0: f32,         // First intersection point coordinate time
+  alpha0: f32,     // Anti-aliasing factor for first intersection
+  u1: f32,         // Second intersection point inverse radius (1/r) (for looped ray paths)
+  phi1: f32,       // Second intersection point angle
+  t1: f32,         // Second intersection point coordinate time
+  alpha1: f32,     // Anti-aliasing factor for second intersection
 }
 
+// Integrates geodesic propagation of the ray, determining if it collides with
+// the accretion disk, loops around the black hole, or escapes to the cosmic background.
 fn TraceRay(u: f32, u_dot: f32, e_square: f32, delta: f32, alpha: f32, u_ic: f32, u_oc: f32, fwidth_e_square: f32) -> TraceResult {
   var res: TraceResult;
   res.u0 = -1.0;
@@ -202,6 +302,7 @@ fn TraceRay(u: f32, u_dot: f32, e_square: f32, delta: f32, alpha: f32, u_ic: f32
   res.alpha1 = 0.0;
 
   if (u_uniforms.lensing == 1u) {
+    // If the ray crosses the event horizon threshold, it is swallowed by the black hole.
     if (e_square < kMu && u > 2.0 / 3.0) {
       res.deflection = -1.0;
       return res;
@@ -209,6 +310,7 @@ fn TraceRay(u: f32, u_dot: f32, e_square: f32, delta: f32, alpha: f32, u_ic: f32
     let deflection_lookup = LookupRayDeflection(e_square, u);
     var ray_deflection = deflection_lookup.deflection.x;
     if (u_dot > 0.0) {
+      // Reconstruct ray deflection angle using symmetry: if traveling outwards, we subtract from total periapsis deflection.
       ray_deflection = select(-1.0 * rad, 2.0 * deflection_lookup.apsis.x - ray_deflection, e_square < kMu);
     }
     res.deflection = ray_deflection;
@@ -226,6 +328,7 @@ fn TraceRay(u: f32, u_dot: f32, e_square: f32, delta: f32, alpha: f32, u_ic: f32
         res.t0 = s * (ui0.y - deflection_lookup.deflection.y);
       }
     }
+    // Calculate secondary intersection (for rays that orbit around the back of the black hole)
     phi = 2.0 * phi_apsis - phi;
     res.phi1 = modulo(modulo(phi, pi) + pi, pi);
     let ui1 = LookupRayInverseRadius(e_square, res.phi1);
@@ -240,11 +343,13 @@ fn TraceRay(u: f32, u_dot: f32, e_square: f32, delta: f32, alpha: f32, u_ic: f32
     res.alpha0 = FilteredPulse(u_oc, u_ic, res.u0, fw0);
     res.alpha1 = FilteredPulse(u_oc, u_ic, res.u1, fw1);
 
+    // Apply special filtering at the critical boundary to prevent pixelated noise at the Einstein ring.
     if (s == 1.0 && abs(e_square - kMu) < min(fwidth_e_square, kMu)) {
       if (res.alpha0 < 0.99) { res.u0 = 2.0 / (1.0 / u_ic + 1.0 / u_oc); }
       if (res.alpha1 < 0.99) { res.u1 = 2.0 / (1.0 / u_ic + 1.0 / u_oc); }
     }
   } else {
+    // Non-relativistic straight-line ray projection
     res.alpha0 = 1.0;
     res.alpha1 = 1.0;
     let eucl = TraceRayEuclidean(1.0 / u, delta, alpha, u_ic, u_oc);
@@ -271,6 +376,8 @@ fn getStarsOrientation() -> mat3x3<f32> {
   );
 }
 
+// Samples the background cosmic galaxy cubemap. If coordinate grid mode is active,
+// returns the red channel as a grid overlay, otherwise scales down the galaxy brightness.
 fn GalaxyColor(dir_in: vec3<f32>, ddx: vec3<f32>, ddy: vec3<f32>) -> vec3<f32> {
   let dir = getStarsOrientation() * dir_in;
   let ddx_rot = getStarsOrientation() * ddx;
@@ -282,6 +389,7 @@ fn GalaxyColor(dir_in: vec3<f32>, ddx: vec3<f32>, ddy: vec3<f32>) -> vec3<f32> {
   }
 }
 
+// Samples the low-resolution background star map when drawing coarse levels of detail.
 fn StarTextureColor(dir: vec3<f32>, lod: f32) -> vec3<f32> {
   if (u_uniforms.grid == 1u) {
     return vec3<f32>(0.8);
@@ -296,6 +404,8 @@ struct StarColorResult {
   sub_position: vec2<f32>,
 }
 
+// Samples individual star metadata from the high-resolution texture. Each texel represents
+// a star catalog entry containing sub-pixel coordinates for anti-aliased sub-pixel rendering.
 fn StarTextureColorLod(dir: vec3<f32>, lod: f32) -> StarColorResult {
   var res: StarColorResult;
   if (u_uniforms.grid == 1u) {
@@ -322,6 +432,9 @@ fn inverseMat2(m: mat2x2<f32>) -> mat2x2<f32> {
   );
 }
 
+// Computes background star antialiased colors. Applies anisotropic filtering
+// using coordinate projection matrices. Gravitational lensing dramatically magnifies
+// background star intensities; the amplification factor is scaled and applied here.
 fn DefaultStarColor(dir_in: vec3<f32>, dx_dir_in: vec3<f32>, dy_dir_in: vec3<f32>, lensing_amplification_factor: f32, min_lod: f32) -> vec3<f32> {
   var dir = dir_in;
   var dx_dir = dx_dir_in;
@@ -390,6 +503,9 @@ fn StarColor(dir_in: vec3<f32>, dx_dir: vec3<f32>, dy_dir: vec3<f32>, lensing_am
   }
 }
 
+// Shifts the incoming color spectrum based on the relativistic Doppler factor.
+// Looks up color modifications from a precalculated spectral shift texture
+// which maps original RGB components to their blue-shifted/red-shifted values.
 fn DefaultDoppler(rgb: vec3<f32>, doppler_factor: f32) -> vec3<f32> {
   let sum = rgb.r + rgb.g + rgb.b;
   if (sum == 0.0) {
@@ -410,6 +526,7 @@ fn Doppler(rgb: vec3<f32>, doppler_factor: f32) -> vec3<f32> {
   }
 }
 
+// Samples blackbody thermal radiation emission spectra at a specific temperature.
 fn BlackBodyColor(temperature: f32) -> vec3<f32> {
   let tex_u = (1.0 / 6.0) * log(temperature * (1.0 / 100.0));
   return textureSampleLevel(black_body_texture, linear_sampler, vec2<f32>(tex_u, 0.5), 0.0).rgb;
@@ -419,10 +536,15 @@ fn Noise(uv: vec2<f32>) -> f32 {
   return 3.0 * (textureSampleLevel(noise_texture, linear_sampler, uv, 0.0).r - 0.5) + 1.0;
 }
 
+// Computes the color emission and density of a thin, turbulent accretion disk.
+// Uses the Shakura-Sunyaev temperature profile:
+//   T_disk(r) ∝ r⁻³/⁴ (1 - √(3/r))¹/⁴
+// where the ISCO (Innermost Stable Circular Orbit) is located at r = 3 (since r_s = 1).
 fn DefaultDiscColor(p: vec2<f32>, p_t: f32, top_side: bool, doppler_factor: f32, disc_temperature: f32) -> vec4<f32> {
   let p_r = length(p);
   let p_phi = atan2(p.y, p.x);
 
+  // Accumulate density from Keplerian orbiting gaseous dust particle paths
   var density = 0.0;
   for (var i = 0; i < NUM_DISC_PARTICLES; i++) {
     let params = u_uniforms.disc_particles[i];
@@ -431,7 +553,7 @@ fn DefaultDiscColor(p: vec2<f32>, p_t: f32, top_side: bool, doppler_factor: f32,
     let phi0 = params.z;
     let dtheta_dphi = params.w;
     let u_avg = (u1 + u2) * 0.5;
-    let dphi_dt = u_avg * sqrt(0.5 * u_avg);
+    let dphi_dt = u_avg * sqrt(0.5 * u_avg); // Keplerian angular frequency dφ/dt = √(GM/r³)
     let phi = dphi_dt * p_t + phi0;
     let a = modulo(p_phi - phi, 2.0 * pi);
     let s = sin(dtheta_dphi * (a + phi));
@@ -441,16 +563,21 @@ fn DefaultDiscColor(p: vec2<f32>, p_t: f32, top_side: bool, doppler_factor: f32,
     density += smoothstep(1.0, 0.0, length(d)) * noise;
   }
 
-  let r_max = 49.0 / 12.0;
+  // Shakura-Sunyaev Black Hole accretion disk thermal profile calculations
+  let r_max = 49.0 / 12.0; // Point of peak temperature profile
   let temperature_profile_max = pow((1.0 - sqrt(3.0 / r_max)) / (r_max * r_max * r_max), 0.25);
   let temperature_profile = pow((1.0 - sqrt(3.0 / p_r)) / (p_r * p_r * p_r), 0.25);
   let temperature = disc_temperature * temperature_profile * (1.0 / temperature_profile_max);
 
+  // Blackbody emission modulated by Doppler factor (gravitational redshift + kinematic shift)
   let color = max(density, 0.0) * BlackBodyColor(temperature * doppler_factor);
+  
+  // Boundary alpha smoothing (smoothly fades out at outer edge and inside ISCO boundary)
   let alpha = smoothstep(INNER_DISC_R, INNER_DISC_R * 1.2, p_r) * smoothstep(OUTER_DISC_R, OUTER_DISC_R / 1.2, p_r);
   return vec4<f32>(color * alpha, alpha);
 }
 
+// Renders a grid pattern over the accretion disk for coordinate visualization.
 fn GridDiscColor(p: vec2<f32>, t: f32, top_side: bool, doppler_factor: f32, temperature: f32) -> vec4<f32> {
   let p_r = length(p);
   if (p_r <= INNER_DISC_R || p_r >= OUTER_DISC_R) {
@@ -481,6 +608,17 @@ fn DiscColor(p: vec2<f32>, t: f32, top_side: bool, doppler_factor_in: f32) -> ve
   return vec4<f32>(density * color.rgb, opacity * color.a);
 }
 
+// =====================================================================================
+// MAIN RELATIVISTIC RAYTRACER (SCENE RENDERING)
+// =====================================================================================
+// Orchestrates the ray tracing and PBR composition of the black hole, accretion disk,
+// lensed background stars, and cosmic dust.
+//
+// Relativistic momentum vector projections are calculated to determine the initial
+// light ray angles. We trace geodesics using our lookup-textures, then compute
+// gravitational redshift / kinematic Doppler factors to blend background light
+// and accretion disk gas emissions realistically.
+// =====================================================================================
 fn SceneColor(camera_position: vec4<f32>, p: vec3<f32>, k_s: vec4<f32>, e_tau: vec3<f32>, e_w: vec3<f32>, e_h: vec3<f32>, e_d: vec3<f32>, view_dir: vec3<f32>) -> vec3<f32> {
   let q = normalize(view_dir);
   let q_dx = dpdx(q);
@@ -497,6 +635,7 @@ fn SceneColor(camera_position: vec4<f32>, p: vec3<f32>, k_s: vec4<f32>, e_tau: v
     t_vec = -t_vec;
   }
 
+  // Calculate coordinates in the local orbital plane
   let alpha = acos(clamp(dot(e_x_prime, t_vec), -1.0, 1.0));
   let delta = acos(clamp(dot(e_x_prime, normalize(d)), -1.0, 1.0));
 
@@ -520,6 +659,7 @@ fn SceneColor(camera_position: vec4<f32>, p: vec3<f32>, k_s: vec4<f32>, e_tau: v
   let alpha1 = deflection_res.alpha1;
   let deflection = deflection_res.deflection;
 
+  // Relativistic projection of photon momentum (four-momentum integration)
   let l = vec4<f32>(e / (1.0 - u), -u_dot, 0.0, u * u);
   let g_k_l_receiver = k_s.x * l.x * (1.0 - u) - k_s.y * l.y / (1.0 - u) - u * dot(e_tau, e_y_prime) * l.w / (u * u);
 
@@ -533,6 +673,8 @@ fn SceneColor(camera_position: vec4<f32>, p: vec3<f32>, k_s: vec4<f32>, e_tau: v
     let g_k_l_source = e;
     let doppler_factor = g_k_l_receiver / g_k_l_source;
 
+    // Calculate lensing amplification by evaluating pixel footprint divergence:
+    //   Amplification = Area_Observer / Area_Source
     let omega = length(cross(q_dx, q_dy));
     let omega_prime = length(cross(d_prime_dx, d_prime_dy));
 
@@ -545,6 +687,8 @@ fn SceneColor(camera_position: vec4<f32>, p: vec3<f32>, k_s: vec4<f32>, e_tau: v
     color += StarColor(d_prime, d_prime_dx, d_prime_dy, lensing_amplification_factor / pixel_area);
     color = Doppler(color, doppler_factor);
   }
+  
+  // Composite accretion disk intersections (under side / far side loop intersection)
   if (u1 >= 0.0 && alpha1 > 0.0) {
     let g_k_l_source = e * sqrt(2.0 / (2.0 - 3.0 * u1)) - u1 * sqrt(u1 / (2.0 - 3.0 * u1)) * dot(e_z, e_z_prime);
     let doppler_factor = g_k_l_receiver / g_k_l_source;
@@ -554,6 +698,8 @@ fn SceneColor(camera_position: vec4<f32>, p: vec3<f32>, k_s: vec4<f32>, e_tau: v
     let disc_color = DiscColor(i1.xy, camera_position[0] - t1, top_side, doppler_factor);
     color = color * (1.0 - disc_color.a) + alpha1 * disc_color.rgb;
   }
+  
+  // Composite accretion disk intersections (top side / near side direct intersection)
   if (u0 >= 0.0 && alpha0 > 0.0) {
     let g_k_l_source = e * sqrt(2.0 / (2.0 - 3.0 * u0)) - u0 * sqrt(u0 / (2.0 - 3.0 * u0)) * dot(e_z, e_z_prime);
     let doppler_factor = g_k_l_receiver / g_k_l_source;

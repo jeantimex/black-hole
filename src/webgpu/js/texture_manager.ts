@@ -1,5 +1,13 @@
+/**
+ * Maximum Level of Detail (LOD) level allocated for the high-resolution star textures.
+ * Mipmaps beyond this level are stored in a secondary texture (starTexture2) to optimize allocation.
+ */
 const MAX_STAR_TEXTURE_LOD = 6;
 
+/**
+ * Loads binary floating-point texture tables via XMLHttpRequest.
+ * Parses the ArrayBuffer into a Float32Array using little-endian encoding.
+ */
 const loadTextureData = function(textureDataUrl: string, callback: (data: Float32Array) => void): void {
   const xhr = new XMLHttpRequest();
   xhr.open('GET', textureDataUrl);
@@ -13,6 +21,7 @@ const loadTextureData = function(textureDataUrl: string, callback: (data: Float3
       const data = new DataView(xhr.response);
       const array = new Float32Array(data.byteLength / Float32Array.BYTES_PER_ELEMENT);
       for (let i = 0; i < array.length; ++i) {
+        // 'true' indicates little-endian format
         array[i] = data.getFloat32(i * Float32Array.BYTES_PER_ELEMENT, true);
       }
       callback(array);
@@ -26,6 +35,10 @@ const loadTextureData = function(textureDataUrl: string, callback: (data: Float3
   xhr.send();
 };
 
+/**
+ * Loads binary integer texture tables (such as Gaia star map tiles) via XMLHttpRequest.
+ * Parses the ArrayBuffer into a Uint32Array using little-endian encoding.
+ */
 const loadIntTextureData = function(textureDataUrl: string, callback: (data: Uint32Array) => void): void {
   const xhr = new XMLHttpRequest();
   xhr.open('GET', textureDataUrl);
@@ -39,6 +52,7 @@ const loadIntTextureData = function(textureDataUrl: string, callback: (data: Uin
       const data = new DataView(xhr.response);
       const array = new Uint32Array(data.byteLength / Uint32Array.BYTES_PER_ELEMENT);
       for (let i = 0; i < array.length; ++i) {
+        // 'true' indicates little-endian format
         array[i] = data.getUint32(i * Uint32Array.BYTES_PER_ELEMENT, true);
       }
       callback(array);
@@ -52,6 +66,11 @@ const loadIntTextureData = function(textureDataUrl: string, callback: (data: Uin
   xhr.send();
 };
 
+/**
+ * WebGPU requires the `bytesPerRow` parameter in copy operations to be a multiple of 256 bytes.
+ * This helper aligns and pads texture data rows to satisfy this WebGPU alignment requirement
+ * if the natural layout (width * bytesPerPixel) is not a multiple of 256.
+ */
 const writeTextureWithPadding = function(
   device: GPUDevice,
   texture: GPUTexture,
@@ -64,6 +83,7 @@ const writeTextureWithPadding = function(
   bytesPerPixel: number
 ): void {
   const actualBytesPerRow = width * bytesPerPixel;
+  // If already aligned or height is 1, we can write directly without padding.
   if (actualBytesPerRow % 256 === 0 || height <= 1) {
     device.queue.writeTexture(
       { texture, mipLevel, origin },
@@ -72,21 +92,26 @@ const writeTextureWithPadding = function(
       [width, height, depth]
     );
   } else {
+    // Calculate aligned row size (nearest multiple of 256 bytes above actualBytesPerRow)
     const alignedBytesPerRow = Math.ceil(actualBytesPerRow / 256) * 256;
     const alignedWordsPerRow = alignedBytesPerRow / srcTypedArray.BYTES_PER_ELEMENT;
     const srcWordsPerRow = actualBytesPerRow / srcTypedArray.BYTES_PER_ELEMENT;
     const paddedSize = alignedWordsPerRow * height * depth;
+    
+    // Instantiate matching typed array for padded storage.
     const paddedData = new (srcTypedArray.constructor as any)(paddedSize);
     for (let d = 0; d < depth; ++d) {
       for (let y = 0; y < height; ++y) {
         const srcOffset = d * srcWordsPerRow * height + y * srcWordsPerRow;
         const dstOffset = d * alignedWordsPerRow * height + y * alignedWordsPerRow;
+        // Copy each row of pixels individually into the aligned memory layout.
         paddedData.set(
           srcTypedArray.subarray(srcOffset, srcOffset + srcWordsPerRow),
           dstOffset
         );
       }
     }
+    // Upload aligned/padded buffer to the WebGPU queue.
     device.queue.writeTexture(
       { texture, mipLevel, origin },
       paddedData,
@@ -96,32 +121,47 @@ const writeTextureWithPadding = function(
   }
 };
 
+/** Metadata detailing an individual star tile to load. */
 interface StarTile {
-  l: number;
-  ti: number;
-  tj: number;
-  i: number;
-  url: string;
+  l: number;    // LOD level
+  ti: number;   // Tile index x
+  tj: number;   // Tile index y
+  i: number;    // Cube face (0-5)
+  url: string;  // Target URL
 }
 
+/**
+ * TextureManager orchestrates downloading, caching, formatting,
+ * and loading WebGPU textures, textures look-up tables (LUTs), and samplers.
+ */
 export class TextureManager {
   private loadingPanel: HTMLElement;
   private loadingBar: HTMLElement;
   private device: GPUDevice;
 
+  // Look-up textures for Schwarzschild raymarching deflection
   rayDeflectionTexture: GPUTexture | null = null;
   rayInverseRadiusTexture: GPUTexture | null = null;
+  
+  // Physics look-up tables (LUTs)
   blackbodyTexture: GPUTexture | null = null;
   dopplerTexture: GPUTexture | null = null;
+  
+  // Coordinate reference systems
   gridTexture: GPUTexture | null = null;
+  
+  // Gaia sky map starfield data textures
   galaxyTexture: GPUTexture | null = null;
   starTexture: GPUTexture | null = null;
   starTexture2: GPUTexture | null = null;
+  
+  // High-frequency noise texture
   noiseTexture: GPUTexture | null = null;
 
   linearSampler: GPUSampler;
   nearestSampler: GPUSampler;
 
+  // Queue to control the loading flow of Gaia star map tiles.
   private tilesQueue: StarTile[] = [];
   private numTilesLoaded = 0;
   private numTilesLoadedPerLevel = [0, 0, 0, 0, 0];
@@ -137,6 +177,7 @@ export class TextureManager {
     this.loadingBar = bar as HTMLElement;
     this.device = device;
 
+    // Set up linear sampler with interpolation.
     this.linearSampler = device.createSampler({
       label: 'TextureManagerLinearSampler',
       addressModeU: 'clamp-to-edge',
@@ -145,6 +186,8 @@ export class TextureManager {
       magFilter: 'linear',
       mipmapFilter: 'linear'
     });
+    
+    // Set up nearest-neighbor sampler (essential for pixelated deflection tables).
     this.nearestSampler = device.createSampler({
       label: 'TextureManagerNearestSampler',
       addressModeU: 'clamp-to-edge',
@@ -153,6 +196,7 @@ export class TextureManager {
       magFilter: 'nearest'
     });
 
+    // Populate textures.
     this.loadTextures();
     this.loadStarTextures();
     this.loadNoiseTexture('noise_texture.png');
@@ -160,15 +204,20 @@ export class TextureManager {
     document.body.addEventListener('keypress', (e) => this.onKeyPress(e));
   }
 
+  /**
+   * Loads core LUT tables (Deflection, Inverse Radius, Doppler, Blackbody, Grid cube map).
+   */
   private loadTextures(): void {
     const device = this.device;
 
+    // 1. Ray deflection table.
+    // Contains pre-calculated deflection angles derived from the Schwarzschild metric equations.
     loadTextureData('deflection.dat', (data) => {
       const width = Math.round(data[0]);
       const height = Math.round(data[1]);
       this.rayDeflectionTexture = device.createTexture({
         size: [width, height, 1],
-        format: 'rg32float',
+        format: 'rg32float', // Dual channels for delta-theta and delta-phi deflection
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
       });
       device.queue.writeTexture(
@@ -179,6 +228,8 @@ export class TextureManager {
       );
     });
 
+    // 2. Inverse radius deflection table.
+    // Encodes inverse distance bounds used to adjust raymarching step sizes dynamically.
     loadTextureData('inverse_radius.dat', (data) => {
       const width = Math.round(data[0]);
       const height = Math.round(data[1]);
@@ -195,6 +246,8 @@ export class TextureManager {
       );
     });
 
+    // 3. Doppler effect LUT (3D Texture).
+    // Maps observer velocity beta (X), viewing angle theta (Y), and temperature (Z) to color variations.
     this.dopplerTexture = device.createTexture({
       size: [64, 32, 64],
       dimension: '3d',
@@ -202,6 +255,7 @@ export class TextureManager {
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
     });
     loadTextureData('doppler.dat', (data) => {
+      // Expand RGB data into RGBA floats to match GPU expectations.
       const rgbaData = new Float32Array(64 * 32 * 64 * 4);
       for (let i = 0; i < 64 * 32 * 64; ++i) {
         rgbaData[i * 4] = data[i * 3];
@@ -217,6 +271,8 @@ export class TextureManager {
       );
     });
 
+    // 4. Blackbody spectrum LUT (1D Texture).
+    // Stores color profiles matching specific thermal temperatures (Planck's Law).
     this.blackbodyTexture = device.createTexture({
       size: [128, 1, 1],
       format: 'rgba32float',
@@ -238,6 +294,8 @@ export class TextureManager {
       );
     });
 
+    // 5. Grid helper lines texture (Cube Map).
+    // Generates procedural coordinates marking angular structures for visual inspection of lensing.
     this.gridTexture = device.createTexture({
       size: [512, 512, 6],
       mipLevelCount: 10,
@@ -245,6 +303,7 @@ export class TextureManager {
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
     });
 
+    // Write grid line markings for all 10 mipmap levels, scaling line sizes to avoid aliasing.
     for (let level = 0; level < 10; ++level) {
       const size = 512 >> level;
       const levelData = new Uint8Array(size * size);
@@ -253,6 +312,7 @@ export class TextureManager {
         const jmod_scaled = Math.floor((j / scale + 2) % 32);
         for (let i = 0; i < size; ++i) {
           const imod_scaled = Math.floor((i / scale + 2) % 32);
+          // Highlight rows/columns that match modulo bounds, producing lines.
           levelData[i + j * size] = (imod_scaled < 4 || jmod_scaled < 4) ? 255 : 0;
         }
       }
@@ -272,9 +332,14 @@ export class TextureManager {
     }
   }
 
+  /**
+   * Initializes texture descriptors for the Gaia Sky Map, which uses
+   * the 'rgb9e5ufloat' (shared-exponent float) format for HDR starfield representation.
+   */
   private loadStarTextures(): void {
     const device = this.device;
 
+    // Full sky map galaxy texture with 12 mipmap levels.
     this.galaxyTexture = device.createTexture({
       size: [2048, 2048, 6],
       mipLevelCount: 12,
@@ -282,6 +347,7 @@ export class TextureManager {
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
     });
 
+    // Star texture for LOD levels 0 through MAX_STAR_TEXTURE_LOD.
     this.starTexture = device.createTexture({
       size: [2048, 2048, 6],
       mipLevelCount: MAX_STAR_TEXTURE_LOD + 1,
@@ -289,6 +355,7 @@ export class TextureManager {
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
     });
 
+    // Star texture for high frequency LOD levels beyond MAX_STAR_TEXTURE_LOD.
     const starTexture2Size = 2048 / (1 << (MAX_STAR_TEXTURE_LOD + 1));
     this.starTexture2 = device.createTexture({
       size: [starTexture2Size, starTexture2Size, 6],
@@ -297,13 +364,14 @@ export class TextureManager {
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
     });
 
+    // Queue up network requests for all star map tiles across 5 LOD levels (l=0 to l=4).
     const base = 'https://ebruneton.github.io/gaia_sky_map';
     const prefixes = ['pos-x', 'neg-x', 'pos-y', 'neg-y', 'pos-z', 'neg-z'];
     for (let l = 0; l <= 4; ++l) {
+      const size = 2048 / (1 << l);
+      const tileSize = Math.min(256, size);
+      const numTiles = size / tileSize;
       for (let i = 0; i < 6; ++i) {
-        const size = 2048 / (1 << l);
-        const tileSize = Math.min(256, size);
-        const numTiles = size / tileSize;
         for (let tj = 0; tj < numTiles; ++tj) {
           for (let ti = 0; ti < numTiles; ++ti) {
             const url = `${base}/${prefixes[i]}-${l}-${ti}-${tj}.dat`;
@@ -316,6 +384,9 @@ export class TextureManager {
     this.loadStarTextureTiles();
   }
 
+  /**
+   * Concurrently processes up to 6 outstanding asset downloads.
+   */
   private loadStarTextureTiles(): void {
     while (this.tilesQueue.length > 0 && this.numPendingRequests < 6) {
       const tile = this.tilesQueue.pop();
@@ -325,6 +396,9 @@ export class TextureManager {
     }
   }
 
+  /**
+   * Asynchronously fetches a star map tile and maps it onto the appropriate mip level.
+   */
   private loadStarTextureTile(l: number, ti: number, tj: number, i: number, url: string): void {
     const device = this.device;
     const size = 2048 / (1 << l);
@@ -333,7 +407,7 @@ export class TextureManager {
       let level = l;
       let tileSize = Math.min(256, size);
       while (start < data.length) {
-        // Upload to galaxyTexture
+        // Upload tile portion to the main galaxy texture.
         writeTextureWithPadding(
           device,
           this.galaxyTexture!,
@@ -343,11 +417,11 @@ export class TextureManager {
           tileSize,
           tileSize,
           1,
-          4
+          4 // 4 bytes per pixel for rgb9e5 shared-exponent formats.
         );
         start += tileSize * tileSize;
 
-        // Upload to starTexture / starTexture2
+        // Populate the dedicated star level textures.
         if (level <= MAX_STAR_TEXTURE_LOD) {
           writeTextureWithPadding(
             device,
@@ -375,7 +449,7 @@ export class TextureManager {
         }
         start += tileSize * tileSize;
         level += 1;
-        tileSize /= 2;
+        tileSize /= 2; // Move down to the next mipmap size.
       }
       this.numTilesLoaded += 1;
       if (l <= MAX_STAR_TEXTURE_LOD) {
@@ -388,6 +462,10 @@ export class TextureManager {
     this.numPendingRequests += 1;
   }
 
+  /**
+   * Loads high-frequency noise texture from a standard image element.
+   * Copies the decoded ImageBitmap into a WebGPU texture destination.
+   */
   private loadNoiseTexture(textureUrl: string): void {
     const device = this.device;
     const image = new Image();
@@ -407,6 +485,9 @@ export class TextureManager {
     image.src = textureUrl;
   }
 
+  /**
+   * Refreshes the HTML loading bar display and updates visibility class once fully completed.
+   */
   private updateLoadingBar(): void {
     this.loadingBar.style.width = `${this.numTilesLoaded / 516 * 100}%`;
     if (this.numTilesLoaded == 516) {
@@ -414,6 +495,10 @@ export class TextureManager {
     }
   }
 
+  /**
+   * Determines the lowest star LOD fully loaded.
+   * Prevents shaders from sampling missing mipmaps.
+   */
   getMinLoadedStarTextureLod(): number {
     if (this.numTilesLoadedPerLevel[0] == 384) {
       return 0.0;
@@ -433,3 +518,4 @@ export class TextureManager {
     }
   }
 }
+

@@ -1,5 +1,67 @@
+// =====================================================================================
+// PHYSICALLY BASED RENDERING (PBR) & COOK-TORRANCE SHADING MODEL
+// =====================================================================================
+//
+// This shader implements a complete microfacet Cook-Torrance BRDF (Bidirectional
+// Reflectance Distribution Function) for rendering the spacecraft model.
+//
+// 1. SPECULAR MICROFACET SHADING MODEL
+// -------------------------------------------------------------------------------------
+// The specular component of the BRDF is modeled as:
+//
+//   f_specular = D * F * V
+//
+// where:
+//   - D: Microfacet Distribution Function (GGX / Trowbridge-Reitz NDF)
+//   - F: Fresnel Reflection Coefficient (Schlick's approximation)
+//   - V: Geometric Visibility Factor (correlated Smith shadow-masking function)
+//
+// 2. FRESNEL REFLECTION - SCHLICK'S APPROXIMATION
+// -------------------------------------------------------------------------------------
+// Reflectance increases dramatically at grazing angles:
+//
+//   F(F0, v_dot_h) = F0 + (1 - F0) * (1 - v_dot_h)⁵
+//
+// where F0 is the base reflectance at normal incidence (0.04 for dielectrics).
+//
+// 3. MICROFACET DISTRIBUTION - GGX (TROWBRIDGE-REITZ NDF)
+// -------------------------------------------------------------------------------------
+// Describes the statistical distribution of microfacet normal orientations relative to half vector h:
+//
+//   D(n_dot_h) = α² / (π * [ (n_dot_h)² * (α² - 1) + 1 ]²)
+//
+// where α = roughness² (visual roughness squared to ensure linear control).
+//
+// 4. GEOMETRIC MASKING & SHADOWING - CORRELATED SMITH GGX
+// -------------------------------------------------------------------------------------
+// Accounts for occlusion between neighboring microfacets. Using height-correlated Smith:
+//
+//   V(n_dot_l, n_dot_v) = 0.5 / ( n_dot_l * √(n_dot_v² * (1 - α²) + α²) + n_dot_v * √(n_dot_l² * (1 - α²) + α²) )
+//
+// 5. IMAGE-BASED LIGHTING (IBL) & MONTE CARLO INTEGRATION
+// -------------------------------------------------------------------------------------
+// Instead of simple point lights, the rocket is illuminated by the surrounding environment
+// map. The incoming radiance is integrated over the hemisphere using Monte Carlo sampling.
+//
+// For high-roughness surfaces:
+//   - Integrates the hemisphere uniformly using N_Z * N_PHI = 24 samples.
+//   - To prevent aliasing, the MIPMAP level is calculated analytically based on sample solid angle:
+//       LOD = 0.5 * log2(Ω_sample / Ω_texel)
+//
+// For low-roughness surfaces (roughness² < 0.0625):
+//   - Uniform sampling gets noisy. Instead, we use Importance Sampling.
+//   - We generate random coordinates using the Van der Corput low-discrepancy sequence.
+//   - Half vectors h are sampled from the GGX PDF using the inverse CDF mapping:
+//       cos(θ) = √[ (1 - u) / ((α² - 1)*u + 1) ]
+//   - The sample ray l is obtained by reflecting view vector v about h: l = reflect(-v, h).
+//   - The resulting sample is weighted by its Probability Density Function (PDF):
+//       PDF = D * (n_dot_h) / (4 * (v_dot_h))
+//
+// =====================================================================================
+
 const PI: f32 = 3.141592653589793;
 
+// Van der Corput low-discrepancy sequence for quasi-random Monte Carlo sampling
 const VAN_DER_CORPUT = array<f32, 32>(
   0.00000, 0.50000, 0.25000, 0.75000, 0.12500, 0.62500, 0.37500, 0.87500,
   0.06250, 0.56250, 0.31250, 0.81250, 0.18750, 0.68750, 0.43750, 0.93750,
@@ -49,15 +111,16 @@ fn vert_main(in: VertexInput) -> VertexOutput {
 }
 
 struct Surface {
-  n: vec3<f32>,
-  tx: vec3<f32>,
-  ty: vec3<f32>,
-  occlusion: f32,
-  alpha_sq: f32,
-  albedo: vec3<f32>,
-  f0: vec3<f32>,
+  n: vec3<f32>,       // Normal vector in tangent space
+  tx: vec3<f32>,      // Tangent vector
+  ty: vec3<f32>,      // Bitangent vector
+  occlusion: f32,    // Ambient occlusion factor
+  alpha_sq: f32,     // α² parameter (roughness⁴)
+  albedo: vec3<f32>,  // Diffuse color component
+  f0: vec3<f32>,      // Specular reflectance at normal incidence
 };
 
+// Computes perturbed normals in tangent space using normal map samples.
 fn ComputeNormal(uv: vec2<f32>, normal_in: vec3<f32>, tangent_in: vec3<f32>) -> vec3<f32> {
   let n = textureSample(normal_map_texture, linear_sampler, uv).xyz * 2.0 - vec3<f32>(1.0);
   let ez = normalize(normal_in);
@@ -66,6 +129,8 @@ fn ComputeNormal(uv: vec2<f32>, normal_in: vec3<f32>, tangent_in: vec3<f32>) -> 
   return normalize(n.x * ex + n.y * ey + n.z * ez);
 }
 
+// Extracts PBR surface properties (albedo, roughness, metallic, normal, occlusion)
+// from the material textures.
 fn ComputeSurface(uv: vec2<f32>, normal_in: vec3<f32>, tangent_in: vec3<f32>, ambient_occlusion_in: f32) -> Surface {
   var surface: Surface;
   surface.n = ComputeNormal(uv, normal_in, tangent_in);
@@ -77,17 +142,19 @@ fn ComputeSurface(uv: vec2<f32>, normal_in: vec3<f32>, tangent_in: vec3<f32>, am
   let roughness = occlusion_roughness_metallic.g;
   let metallic = occlusion_roughness_metallic.b;
   let alpha = roughness * roughness;
-  surface.alpha_sq = alpha * alpha;
+  surface.alpha_sq = alpha * alpha; // α²
 
   let DIELECTRIC_F0 = 0.04;
   let METAL_ALBEDO = vec3<f32>(0.0);
   let color = textureSample(base_color_texture, linear_sampler, uv).rgb;
+  // Non-metals use dielectric color, metals discard diffuse and use color as f0 specular.
   surface.albedo = mix(color * (1.0 - DIELECTRIC_F0), METAL_ALBEDO, metallic);
   surface.f0 = mix(vec3<f32>(DIELECTRIC_F0), color, metallic);
   
   return surface;
 }
 
+// Reconstructs a direction vector from spherical angles (theta, phi) relative to the surface normal.
 fn GetVector(surface: Surface, cos_theta: f32, sin_theta: f32, phi: f32) -> vec3<f32> {
   let vx = sin_theta * cos(phi);
   let vy = sin_theta * sin(phi);
@@ -95,16 +162,19 @@ fn GetVector(surface: Surface, cos_theta: f32, sin_theta: f32, phi: f32) -> vec3
   return vx * surface.tx + vy * surface.ty + vz * surface.n;
 }
 
+// Schlick's approximation of the Fresnel reflection coefficient.
 fn Fresnel(f0: vec3<f32>, v_dot_h: f32) -> vec3<f32> {
   return f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - v_dot_h, 5.0);
 }
 
+// GGX height-correlated Smith shadow-masking function: V = G / (4 * (n·l) * (n·v))
 fn MicroFacetVisibility(alpha_sq: f32, n_dot_l: f32, n_dot_v: f32) -> f32 {
   let a = n_dot_l * sqrt(n_dot_v * n_dot_v * (1.0 - alpha_sq) + alpha_sq);
   let b = n_dot_v * sqrt(n_dot_l * n_dot_l * (1.0 - alpha_sq) + alpha_sq);
   return 0.5 / (a + b);
 }
 
+// Trowbridge-Reitz / GGX Microfacet Normal Distribution Function (NDF)
 fn MicroFacetDistribution(alpha_sq: f32, n_dot_h: f32) -> f32 {
   let a = n_dot_h * n_dot_h * (alpha_sq - 1.0) + 1.0;
   return alpha_sq / (PI * a * a);
@@ -112,6 +182,8 @@ fn MicroFacetDistribution(alpha_sq: f32, n_dot_h: f32) -> f32 {
 
 const ENV_MAP_SIZE: f32 = 64.0;
 
+// Performs hemispherical numerical integration over the environmental map
+// to shade the spacecraft based on material roughness and metallic inputs.
 fn ImageBasedLighting(surface: Surface, v: vec3<f32>) -> vec3<f32> {
   let N_Z = 3;
   const N_PHI = 8;
@@ -122,6 +194,7 @@ fn ImageBasedLighting(surface: Surface, v: vec3<f32>) -> vec3<f32> {
   var diffuse = vec3<f32>(0.0);
   var specular = vec3<f32>(0.0);
   
+  // Numerical hemispherical integration for diffuse and coarse specular highlights
   for (var i = 0; i < N_Z; i++) {
     let cos_theta = (f32(i) + 0.5) / f32(N_Z);
     let sin_theta = sqrt(1.0 - cos_theta * cos_theta);
@@ -145,10 +218,12 @@ fn ImageBasedLighting(surface: Surface, v: vec3<f32>) -> vec3<f32> {
   diffuse *= OMEGA_SAMPLE / PI;
   specular *= OMEGA_SAMPLE;
 
+  // Monte Carlo Importance Sampling for smooth, low-roughness specular reflections (shiny surfaces)
   let SAMPLE_COUNT = 24;
   var importance_specular = vec3<f32>(0.0);
   for (var i = 0; i < SAMPLE_COUNT; i++) {
     let vdc = VAN_DER_CORPUT[i];
+    // Inverse CDF mapping for GGX microfacet distribution
     let z_sq = (1.0 - vdc) / ((surface.alpha_sq - 1.0) * vdc + 1.0);
     let cos_theta = sqrt(z_sq);
     let sin_theta = sqrt(1.0 - z_sq);
@@ -165,8 +240,10 @@ fn ImageBasedLighting(surface: Surface, v: vec3<f32>) -> vec3<f32> {
     let V = MicroFacetVisibility(surface.alpha_sq, n_dot_l, n_dot_v);
     let D = MicroFacetDistribution(surface.alpha_sq, n_dot_h);
 
+    // Probability Density Function:
     let pdf = D * n_dot_h / (4.0 * v_dot_h);
     let omega_sample_inverse = pdf * f32(SAMPLE_COUNT);
+    // Dynamic LOD selection based on PDF to sample envmap smoothly
     let lod = -0.5 * log2(omega_sample_inverse * OMEGA_TEXEL);
     let L = textureSampleLevel(env_map_texture, linear_sampler, l, lod).rgb;
 

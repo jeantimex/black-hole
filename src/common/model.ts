@@ -1,10 +1,65 @@
-// The speed of light.
+// =====================================================================================
+// MATHEMATICAL PHYSICS ORBIT SIMULATOR (RELATIVISTIC ORBIT MODEL)
+// =====================================================================================
+//
+// 1. CONSTANTS OF MOTION DERIVATIONS
+// -------------------------------------------------------------------------------------
+// For a massive particle (observer or rocket) orbiting a Schwarzschild black hole:
+//   - Proper time: τ
+//   - Coordinate time: t
+//   - Constants of motion: Energy E, Angular Momentum L.
+//
+// Relativistic geodesic equations in terms of proper time τ:
+//
+//   (dr/dτ)² + (1 - r_s/r)(1 + L²/r²) = E²
+//   dφ/dτ = L / r²
+//   dt/dτ = E / (1 - r_s/r)
+//
+// In our units, r_s = 2GM/c² = 1.0. If the observer starts at radius r0 with local speed v
+// at direction angle δ (relative to radial direction):
+//   - Local radial speed:     v_r = v * cos(δ)
+//   - Local transverse speed: v_φ = v * sin(δ)
+//
+// Using Schwarzschild coordinate mappings, we solve for constants e and l:
+//
+//   e² = (1 - u0) / (1 - v²)
+//   l² = (e² - 1 + u0) / [u0² * (1 - u0 + cot²(δ))]
+//
+// 2. RADIAL ORBIT GEODESIC INTEGRATION
+// -------------------------------------------------------------------------------------
+// Differentiating the radial geodesic equation with respect to proper time τ gives:
+//
+//   d²r/dτ² = u² * [ L² * u * (2 - 3u) - 1 ] / 2
+//
+// The simulator integrates this second-order ODE using Euler's method with high-density
+// sub-stepping (n = 1000 steps per frame) to compute the observer's orbital trajectory.
+//
+// 3. LORENTZ BOOSTS & REFERENCE TETRADS
+// -------------------------------------------------------------------------------------
+// An observer moving with four-velocity U^μ defines a local inertial frame (tetrad).
+// To transform light directions from the observer's camera to the static coordinate frame:
+//   - We calculate the velocity v_i in the local static observer frame.
+//   - Construct the standard 4D Special Relativistic Lorentz Boost matrix.
+//   - Multiply the boost matrix by the coordinate rotation matrices (orbit tilt and camera angles)
+//     to obtain the overall spacetime rotation matrix (Lorentz transform).
+//
+// 4. ACCELERATION & TIME DILATION
+// -------------------------------------------------------------------------------------
+//   - G-Force (static observer): Proper acceleration felt due to staying at a fixed radius r:
+//       a = GM / (r² * √(1 - r_s/r))
+//   - Time Dilation:
+//       dt/dτ = E / (1 - r_s/r) (moving observer)
+//       dt/dτ = 1 / √(1 - r_s/r) (static observer)
+//
+// =====================================================================================
+
+// The speed of light in meters per second.
 const C = 299792458;
 
 // The gravitational constant.
 const G = 6.6743e-11;
 
-// The mass of the Sun.
+// The mass of the Sun in kilograms.
 const SOLAR_MASS = 1.98847e30;
 
 export type StateType = 'STOPPED' | 'PLAYING' | 'PAUSED';
@@ -224,9 +279,10 @@ export class Model {
     }
   }
 
+  // Solves the geodesic differential equations of motion for the observer.
   updateOrbit(dTauSeconds: number): void {
     const M = this.blackHoleMass.getValue() * SOLAR_MASS;
-    const dTauOverDtauSeconds = C * C * C / (2 * G * M);
+    const dTauOverDtauSeconds = (C * C * C) / (2 * G * M);
     const dTau = dTauOverDtauSeconds * dTauSeconds;
 
     let u = 1 / this.r;
@@ -237,15 +293,17 @@ export class Model {
     this.localElapsedTimeSeconds += dTauSeconds;
     this.globalElapsedTimeSeconds += dtOverDtau * dTauSeconds;
 
+    // Run high-precision sub-stepping integration to prevent Euler drift
     if (this.state == State.PLAYING) {
       const n = 1000;
       const dTauN = dTau / n;
       for (let i = 0; i < n; ++i) {
         u = 1 / this.r;
+        // Derived from Schwarzschild geodesic: d²r/dτ² = u² * [ L² * u * (2 - 3u) - 1 ] / 2
         const d2rOverDtau2 = u * u * (l * l * (2 - 3 * u) * u - 1) / 2;
         this.drOverDtau += d2rOverDtau2 * dTauN;
         this.r += this.drOverDtau * dTauN;
-        this.phi += l * u * u * dTauN;
+        this.phi += l * u * u * dTauN; // dφ/dτ = L / r²
         if (this.r <= 1.0 || this.r > 100.0) {
           this.setState(State.STOPPED);
           return;
@@ -287,12 +345,13 @@ export class Model {
     ];
   }
 
+  // Solves the initial constants of motion from starting parameters r0, direction angle, and speed.
   updateCameraCoordinates(): void {
     const r0 = this.startRadius.getValue();
     const delta = this.startDirection.getValue();
     const v = this.startSpeed.getValue();
 
-    // Compute the constants of motion from the initial conditions r0, delta, v.
+    // Schwarzschild coordinate representation of constants of motion:
     const u0 = 1 / r0;
     const cotDelta = 1 / Math.tan(delta);
     const e2 = (1 - u0) / (1 - v * v);
@@ -302,7 +361,7 @@ export class Model {
     this.e = e;
     this.l = l;
 
-    // Update the Schwarzschild coordinates of the camera.
+    // Reset parameters when orbit simulation is stopped
     if (this.state == State.STOPPED) {
       this.r = r0;
       this.drOverDtau = -safeSqrt(e2 - (1 - u0) - l * l * u0 * u0 * (1 - u0));
@@ -316,6 +375,7 @@ export class Model {
     this.worldPhi = Math.atan2(sphi, cphi * ci);
   }
 
+  // Computes the Lorentz boost tensors and relative camera/rocket local angles.
   updateCameraAndRocketLorentzTransforms(): void {
     const e = this.e;
     const l = this.l;
@@ -346,6 +406,8 @@ export class Model {
     const v2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
     const gamma = 1 / Math.sqrt(1 - v2);
     const gv = v2 == 0 ? 0 : (gamma - 1) / v2;
+    
+    // Spacetime 4-velocity boost matrix:
     const boost = [
       [     gamma,       gamma*v[0],       gamma*v[1],       gamma*v[2]],
       [gamma*v[0], 1 + gv*v[0]*v[0],     gv*v[0]*v[1],     gv*v[0]*v[2]],
@@ -395,6 +457,7 @@ export class Model {
     return Math.atan2(dphi0, dr0);
   }
 
+  // Generates coordinate axes (tetrads) representing the local observer reference frame.
   updateCameraAndRocketReferenceFrames(): void {
     const r = this.r;
     const cos_theta = Math.cos(this.worldTheta);
@@ -406,6 +469,7 @@ export class Model {
     const v = Math.sqrt(1 - u);
     const ur = [sin_theta * cos_phi, sin_theta * sin_phi, cos_theta];
 
+    // Schwarzschild static tetrad vectors:
     const e_t = [1 / v, 0, 0, 0];
     const e_r = [0, v * ur[0], v * ur[1], v * ur[2]];
     const e_theta = [0, cos_theta * cos_phi, cos_theta * sin_phi, -sin_theta];
@@ -427,20 +491,22 @@ export class Model {
     this.kS = [L[0][0] / v, v * L[0][1], u * L[0][2], u / sin_theta * L[0][3]];
   }
 
+  // Computes UI physical statistics (g-force, velocity, time dilation).
   updateOrbitInfo(): void {
     const M = this.blackHoleMass.getValue() * SOLAR_MASS;
-    this.blackHoleRadiusMeters = 2 * G  * M / (C * C);
+    this.blackHoleRadiusMeters = (2 * G * M) / (C * C);
     const e = this.e;
     const u = 1 / this.r;
     if (this.state == State.PLAYING) {
       this.speedMetersPerSecond = Math.sqrt(1 - (1 - u) / (e * e)) * C;
-      this.gForce = 0;
-      this.timeDilationFactor = e / (1 - u);
+      this.gForce = 0; // In free fall, proper acceleration is zero (equivalence principle)
+      this.timeDilationFactor = e / (1 - u); // dt/dτ = E / (1 - r_s/r)
     } else {
       const rMeters = this.r * this.blackHoleRadiusMeters;
       this.speedMetersPerSecond = 0;
+      // Proper acceleration felt by static observer: a = GM / (r² * √(1 - r_s/r))
       this.gForce = G * M / (rMeters * rMeters * Math.sqrt(1 - u));
-      this.timeDilationFactor = 1 / Math.sqrt(1 - u);
+      this.timeDilationFactor = 1 / Math.sqrt(1 - u); // dt/dτ = 1 / √(1 - r_s/r)
     }
   }
 }

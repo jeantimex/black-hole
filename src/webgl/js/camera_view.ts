@@ -1,9 +1,38 @@
+/**
+ * @file camera_view.ts
+ * @brief Coordinates the main canvas, WebGL2 state, texture bindings, uniform passing, and rendering loop.
+ *
+ * Architectural & Physical Workflow:
+ * - This class initializes the WebGL2 context and queries required float-buffer extensions.
+ * - In each frame (`onRender`):
+ *   1. Updates the elapsed time and orbit calculations.
+ *   2. Binds precomputed ray deflection and inverse radius tables, Gaia star map textures,
+ *      black body spectrum, Doppler LUTs, and noise maps to active texture units (0 to 7).
+ *   3. Sets uniforms defining the observer's physical coordinates:
+ *       - Schwarzschild Coordinates (t, r, \theta, \phi) passed to `camera_position`.
+ *       - Cartesian position vector `p`.
+ *       - Observer 4-velocity vector `k_s` (essential for Lorentz boosts and relativistic Doppler shifts).
+ *       - Orthonormal tetrad basis vectors: `e_tau` (temporal unit vector), `e_w` (horizontal width vector),
+ *         `e_h` (vertical height vector), `e_d` (look-at depth vector).
+ *       - Accretion disk settings: (density, opacity, temperature).
+ *   4. Executes the raymarching pass inside a high-dynamic range (HDR) framebuffer managed by `bloom.begin()`.
+ *   5. If the rocket is visible:
+ *       - Renders the lensed black hole scene to a 6-faced environment cube-map centered on the rocket's local coordinates.
+ *       - Renders the rocket mesh using tangent-space PBR.
+ *       - Draws the volumetric exhaust flame, scaling the emission according to the rocket's thrust/gForce.
+ *   6. Invokes the downsampling/upsampling/tone-mapping composite pass using `bloom.end()`.
+ *   7. Schedules the next frame via `requestAnimationFrame` and monitors frame rates to dynamically optimize quality (auto-disabling stars if FPS drops).
+ */
+
 import { Model } from '../../common/model';
 import { Bloom } from './bloom';
 import { TextureManager } from './texture_manager';
 import { ShaderManager } from './shader_manager';
 import { RocketManager } from './rocket_manager';
 
+/**
+ * @brief Creates a buffer containing coordinates for a full-screen triangle strip quad.
+ */
 const createQuadVertexBuffer = function(gl: WebGL2RenderingContext): WebGLBuffer {
   const vertexBuffer = gl.createBuffer();
   if (!vertexBuffer) throw new Error("Could not create quad vertex buffer");
@@ -56,6 +85,7 @@ export class CameraView {
     this.errorPanel = errEl as HTMLElement;
     this.errorPanelShown = false;
 
+    // Get WebGL2 rendering context
     const glContext = this.canvas.getContext('webgl2');
     if (!glContext) {
       throw new Error("Could not get WebGL2 context");
@@ -81,6 +111,7 @@ export class CameraView {
     this.previousMouseY = undefined;
     this.hidden = false;
 
+    // Set up mouse interaction listeners for camera orientation dragging
     window.addEventListener('mousedown', (e) => this.onMouseDown(e));
     window.addEventListener('mousemove', (e) => this.onMouseMove(e));
     window.addEventListener('mouseup', () => this.onMouseUp());
@@ -92,9 +123,13 @@ export class CameraView {
       }
     });
 
+    // Start the game rendering loop
     requestAnimationFrame(() => this.onRender());
   }
 
+  /**
+   * @brief Queries and validates that the browser supports required WebGL2 capabilities.
+   */
   private initGl(): boolean {
     if (!this.gl ||
         !this.gl.getExtension('OES_texture_float_linear') ||
@@ -112,6 +147,9 @@ export class CameraView {
     return true;
   }
 
+  /**
+   * @brief The core rendering loop. Invoked every frame to update physics and draw the environment.
+   */
   private onRender(): void {
     if (this.hidden) {
       return;
@@ -129,11 +167,13 @@ export class CameraView {
     const dTauSeconds = tauSeconds - this.lastTauSeconds;
     this.lastTauSeconds = tauSeconds;
 
+    // Calculate camera focal length: f = height / (2 * tan(fov / 2))
     const tanFovY = Math.tan(this.model.fovY / 2);
     const focalLength = this.canvas.height / (2 * tanFovY);
 
     const gl = this.gl; 
     
+    // Retrieve texture references
     const rayDeflectionTexture = this.textureManager.rayDeflectionTexture;
     const rayInverseRadiusTexture = this.textureManager.rayInverseRadiusTexture;
     const galaxyTexture = this.textureManager.galaxyTexture;
@@ -144,11 +184,13 @@ export class CameraView {
     const dopplerTexture = this.textureManager.dopplerTexture;
     const noiseTexture = this.textureManager.noiseTexture;
 
+    // Ensure core textures have finished loading before rendering
     if (!rayDeflectionTexture || !rayInverseRadiusTexture || !starTexture || !starTexture2 || !blackbodyTexture || !dopplerTexture || !noiseTexture) {
       requestAnimationFrame(() => this.onRender());
       return;
     }
 
+    // --- Bind textures to WebGL texture units ---
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, rayDeflectionTexture);      
 
@@ -180,17 +222,21 @@ export class CameraView {
     gl.activeTexture(gl.TEXTURE7);
     gl.bindTexture(gl.TEXTURE_2D, noiseTexture);
 
+    // --- Configure shader uniforms ---
     gl.useProgram(program);
     if (program.cameraSize) {
       gl.uniform3f(program.cameraSize, this.canvas.width / 2, this.canvas.height / 2, focalLength);
     }
     if (program.cameraPosition) {
+      // cameraPosition: Schwarzschild coordinates (t, r, theta, phi)
       gl.uniform4f(program.cameraPosition, this.model.t, this.model.r, this.model.worldTheta, this.model.worldPhi);
     }
     if (program.p) {
+      // Cartesian position vector
       gl.uniform3f(program.p, this.model.p[0], this.model.p[1], this.model.p[2]);
     }
     if (program.kS) {
+      // Observer 4-velocity in Schwarzschild coordinates
       gl.uniform4f(program.kS, this.model.kS[0], this.model.kS[1], this.model.kS[2], this.model.kS[3]);
     }
     if (program.eTau) {
@@ -205,6 +251,7 @@ export class CameraView {
     if (program.eD) {
       gl.uniform3f(program.eD, this.model.eD[1], this.model.eD[2], this.model.eD[3]);
     }
+    
     if (program.rayDeflectionTexture) gl.uniform1i(program.rayDeflectionTexture, 0);
     if (program.rayInverseRadiusTexture) gl.uniform1i(program.rayInverseRadiusTexture, 1); 
     if (program.galaxyCubeTexture) gl.uniform1i(program.galaxyCubeTexture, 2);
@@ -226,8 +273,10 @@ export class CameraView {
           this.model.discTemperature.getValue());
     }
 
+    // Bind HDR bloom buffer as the active rendering target
     this.bloom.begin();
 
+    // Draw full-screen quad to trigger primary relativistic raymarching
     gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
     if (program.vertexAttrib !== undefined && program.vertexAttrib >= 0) {
       gl.vertexAttribPointer(program.vertexAttrib, 2, gl.FLOAT, false, 0, 0);
@@ -238,23 +287,33 @@ export class CameraView {
       gl.disableVertexAttribArray(program.vertexAttrib);
     }
 
+    // --- Optional Rocket Overlay ---
     if (this.model.rocket.getValue()) {
+      // 1. Render the environment cubemap from the rocket's local position
       this.rocketManager.renderEnvMap(program, this.vertexBuffer);
+      // 2. Draw the rocket mesh with environmental reflections (PBR)
       this.rocketManager.drawRocket();
+      // 3. Draw the engine exhaust plume with volumetric raymarching
       if (this.model.gForce > 0) {
         this.rocketManager.drawExhaust(tauSeconds, this.model.gForce);
       }
     }
 
+    // Composite HDR buffer back to canvas sRGB backbuffer with bloom blurs and tone mapping
     this.bloom.end(this.model.bloom.getValue(), this.model.exposure.getValue(),
         this.model.highContrast.getValue());
 
+    // Update orbit physics: integrations of camera geodesics
     this.model.updateOrbit(dTauSeconds);
 
+    // Schedule next frame
     requestAnimationFrame(() => this.onRender());
     this.checkFrameRate();
   }
 
+  /**
+   * @brief Monitors frame rate performance. Auto-disables heavy star rendering if frames drop.
+   */
   private checkFrameRate(): void {
     this.numFrames += 1;
     const time = Date.now();
@@ -263,6 +322,7 @@ export class CameraView {
       this.numFrames = 0;
     }
     if (time > this.lastFrameTime + 1000) {
+      // If frame rate drops below 10 FPS, auto-disable star rendering for stability
       if (this.numFrames <= 10 && this.model.stars.getValue() && 
           !this.errorPanelShown) {
         this.model.stars.setValue(false);
@@ -285,6 +345,9 @@ export class CameraView {
     this.drag = (target.tagName != 'INPUT') && !event.ctrlKey;
   }
 
+  /**
+   * @brief Handles camera look-around rotations via mouse dragging.
+   */
   private onMouseMove(event: MouseEvent): void {
     const mouseX = event.screenX;
     const mouseY = event.screenY;

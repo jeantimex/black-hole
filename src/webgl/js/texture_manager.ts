@@ -1,5 +1,39 @@
+/**
+ * @file texture_manager.ts
+ * @brief Manages loading and binding of precomputed geodesic tables, black body tables, Doppler LUTs, and Gaia star catalog tiles.
+ *
+ * Architecture & Mathematics:
+ *
+ * 1. Geodesic Lookup Tables (LUTs):
+ *    - `deflection.dat`: Contains precomputed deflection angles \Delta\phi and elapsed coordinate times \Delta t
+ *      for various values of energy e^2 and radial coordinate u. Loaded into `rayDeflectionTexture` (RG32F).
+ *    - `inverse_radius.dat`: Contains precomputed radial positions u and travel times t as functions of
+ *      deflection angle \phi. Loaded into `rayInverseRadiusTexture` (RG32F).
+ *    - Together, these LUTs enable O(1) evaluation of Schwarzschild geodesics per fragment.
+ *
+ * 2. Shared Exponent HDR Texture Format (RGB9_E5):
+ *    - The Gaia star map and galaxy nebulae textures require High Dynamic Range (HDR) to store realistic star intensities.
+ *    - Standard 32-bit floating-point format (RGBA32F) consumes too much memory (16 bytes/pixel).
+ *    - We use the `gl.RGB9_E5` format (data format type `gl.UNSIGNED_INT_5_9_9_9_REV`). This format packs
+ *      three 9-bit mantissas (for R, G, B) and a single shared 5-bit exponent into a single 32-bit word (4 bytes/pixel).
+ *      This provides wide dynamic range representation while saving 75% video memory.
+ *
+ * 3. Star Catalog Tile Loading Queue:
+ *    - The star catalog cubemap is huge (2048x2048 per face).
+ *    - We partition the texture into smaller tiles at different mipmap levels (l = 0 to 4).
+ *    - The tiles are loaded progressively using an asynchronous pipeline, restricted to 6 concurrent network requests
+ *      to avoid choking the network socket pool.
+ *    - As each tile completes loading, we update regions of the cubemaps (`galaxyTexture`, `starTexture`, and `starTexture2`)
+ *      using `gl.texSubImage2D`.
+ *    - `getMinLoadedStarTextureLod()` monitors loading progress and returns the finest fully loaded mipmap level,
+ *      ensuring no black areas are rendered.
+ */
+
 const MAX_STAR_TEXTURE_LOD = 6;
 
+/**
+ * @brief Returns WebGL target constants for the 6 faces of a cubemap.
+ */
 const cubeMapTargets = function(gl: WebGL2RenderingContext): number[] {
   return [
     gl.TEXTURE_CUBE_MAP_POSITIVE_X,
@@ -11,6 +45,9 @@ const cubeMapTargets = function(gl: WebGL2RenderingContext): number[] {
   ];
 };
 
+/**
+ * @brief Utility to allocate a WebGL texture with default filtering and wrapping modes.
+ */
 const createTexture = function(gl: WebGL2RenderingContext, target: number): WebGLTexture {
   const texture = gl.createTexture();
   if (!texture) throw new Error("Could not create WebGL texture");
@@ -23,6 +60,9 @@ const createTexture = function(gl: WebGL2RenderingContext, target: number): WebG
   return texture;
 };
 
+/**
+ * @brief Asynchronously fetches binary float32 data from a URL.
+ */
 const loadTextureData = function(textureDataUrl: string, callback: (data: Float32Array) => void): void {
   const xhr = new XMLHttpRequest();
   xhr.open('GET', textureDataUrl);
@@ -38,6 +78,9 @@ const loadTextureData = function(textureDataUrl: string, callback: (data: Float3
   xhr.send();
 };
 
+/**
+ * @brief Asynchronously fetches binary uint32 data (packed RGB9_E5 texels) from a URL.
+ */
 const loadIntTextureData = function(textureDataUrl: string, callback: (data: Uint32Array) => void): void {
   const xhr = new XMLHttpRequest();
   xhr.open('GET', textureDataUrl);
@@ -53,6 +96,9 @@ const loadIntTextureData = function(textureDataUrl: string, callback: (data: Uin
   xhr.send();
 };
 
+/**
+ * @brief Loads a noise texture map used to generate accretion disk dust turbulences.
+ */
 const loadNoiseTexture = function(gl: WebGL2RenderingContext, glExt: any, textureUrl: string): WebGLTexture {
   const texture = gl.createTexture();
   if (!texture) throw new Error("Could not create noise texture");
@@ -126,25 +172,33 @@ export class TextureManager {
     document.body.addEventListener('keypress', (e) => this.onKeyPress(e)); 
   }
 
+  /**
+   * @brief Allocates and loads precomputed lookup data files.
+   */
   private loadTextures(ext: any): void {
     const gl = this.gl;
 
+    // Load precomputed deflection angles LUT
     loadTextureData('deflection.dat', (data) => {
       this.rayDeflectionTexture = createTexture(gl, gl.TEXTURE_2D);
       this.rayDeflectionTexture.width = data[0];
       this.rayDeflectionTexture.height = data[1];
+      // Store in high-precision float RG32F buffer
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, data[0], data[1], 0, 
                     gl.RG, gl.FLOAT, data.slice(2));
     });
 
+    // Load precomputed inverse radius coordinate paths LUT
     loadTextureData('inverse_radius.dat', (data) => {
       this.rayInverseRadiusTexture = createTexture(gl, gl.TEXTURE_2D);
       this.rayInverseRadiusTexture.width = data[0];
       this.rayInverseRadiusTexture.height = data[1];
+      // Store in high-precision float RG32F buffer
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, data[0], data[1], 0,
                     gl.RG, gl.FLOAT, data.slice(2));
     });
 
+    // Load relativistic Doppler shift 3D color lookup table
     this.dopplerTexture = createTexture(gl, gl.TEXTURE_3D);
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -156,6 +210,7 @@ export class TextureManager {
                     gl.RGB, gl.FLOAT, data);
     });
 
+    // Load precomputed Planck blackbody radiation spectrum 1D LUT
     this.blackbodyTexture = createTexture(gl, gl.TEXTURE_2D);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -166,6 +221,7 @@ export class TextureManager {
                     gl.RGB, gl.FLOAT, data);
     });
 
+    // Allocate and generate procedurally a grid calibration pattern cubemap
     this.gridTexture = createTexture(gl, gl.TEXTURE_CUBE_MAP);
     gl.texStorage2D(gl.TEXTURE_CUBE_MAP, 10, gl.R8, 512, 512);
     gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
@@ -187,9 +243,13 @@ export class TextureManager {
     gl.generateMipmap(gl.TEXTURE_CUBE_MAP);
   }
 
+  /**
+   * @brief Allocates texture objects for the Gaia star catalog and registers tile load requests.
+   */
   private loadStarTextures(glExt: any): void {
     const gl = this.gl;
 
+    // Allocate background galaxy cubemap
     this.galaxyTexture = createTexture(gl, gl.TEXTURE_CUBE_MAP);
     gl.bindTexture(gl.TEXTURE_CUBE_MAP, this.galaxyTexture);
     gl.texStorage2D(gl.TEXTURE_CUBE_MAP, 12, gl.RGB9_E5, 2048, 2048);
@@ -198,6 +258,7 @@ export class TextureManager {
     gl.texParameterf(gl.TEXTURE_CUBE_MAP, glExt.TEXTURE_MAX_ANISOTROPY_EXT, 
                      gl.getParameter(glExt.MAX_TEXTURE_MAX_ANISOTROPY_EXT));
 
+    // Allocate high-frequency stars cubemap (first 6 mipmap levels)
     this.starTexture = createTexture(gl, gl.TEXTURE_CUBE_MAP);
     gl.bindTexture(gl.TEXTURE_CUBE_MAP, this.starTexture);
     gl.texStorage2D(gl.TEXTURE_CUBE_MAP, MAX_STAR_TEXTURE_LOD + 1, gl.RGB9_E5, 2048, 2048);
@@ -206,6 +267,7 @@ export class TextureManager {
     gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAX_LOD, MAX_STAR_TEXTURE_LOD);
     gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAX_LEVEL, MAX_STAR_TEXTURE_LOD);
 
+    // Allocate remaining low-resolution mipmap levels of the stars cubemap
     this.starTexture2 = createTexture(gl, gl.TEXTURE_CUBE_MAP);
     gl.bindTexture(gl.TEXTURE_CUBE_MAP, this.starTexture2);
     gl.texStorage2D(gl.TEXTURE_CUBE_MAP, 11 - MAX_STAR_TEXTURE_LOD, gl.RGB9_E5, 
@@ -216,6 +278,7 @@ export class TextureManager {
     gl.texParameterf(gl.TEXTURE_CUBE_MAP, glExt.TEXTURE_MAX_ANISOTROPY_EXT, 
                      gl.getParameter(glExt.MAX_TEXTURE_MAX_ANISOTROPY_EXT));
 
+    // Define and queue URL addresses for all Gaia catalog tiles
     const base = 'https://ebruneton.github.io/gaia_sky_map';
     const prefixes = ['pos-x', 'neg-x', 'pos-y', 'neg-y', 'pos-z', 'neg-z'];
     const targets = cubeMapTargets(gl);
@@ -237,6 +300,9 @@ export class TextureManager {
     this.loadStarTextureTiles();
   }
 
+  /**
+   * @brief Dequeues and launches async requests for tiles, capping at 6 concurrent connections.
+   */
   private loadStarTextureTiles(): void {
     while (this.tilesQueue.length > 0 && this.numPendingRequests < 6) {
       const tile = this.tilesQueue.pop();
@@ -246,6 +312,9 @@ export class TextureManager {
     }
   }
 
+  /**
+   * @brief Fetches a single star tile dat block and updates region allocations in GPU memory.
+   */
   private loadStarTextureTile(l: number, ti: number, tj: number, _i: number, target: number, url: string): void {
     const gl = this.gl;
     const size = 2048 / (1 << l);
@@ -254,12 +323,17 @@ export class TextureManager {
       let start = 0;
       let level = l;
       let tileSize = Math.min(256, size);
+      
+      // The dat file packs texels for multiple mipmap sub-levels. Loop through them:
       while (start < data.length) {
+        // 1. Upload to the diffuse galaxy/nebulae cubemap
         gl.bindTexture(gl.TEXTURE_CUBE_MAP, this.galaxyTexture);
         gl.texSubImage2D(target, level, ti * tileSize, tj * tileSize, 
             tileSize, tileSize, gl.RGB, gl.UNSIGNED_INT_5_9_9_9_REV, 
             data.subarray(start, start + tileSize * tileSize), 0);
         start += tileSize * tileSize;
+        
+        // 2. Upload to the point star catalog cubemaps (split across starTexture and starTexture2)
         if (level <= MAX_STAR_TEXTURE_LOD) {
           gl.bindTexture(gl.TEXTURE_CUBE_MAP, this.starTexture);
           gl.texSubImage2D(target, level, ti * tileSize, tj * tileSize, 
@@ -294,6 +368,9 @@ export class TextureManager {
     }
   } 
 
+  /**
+   * @brief Queries the status of star catalog loading to return the highest fully loaded LOD level.
+   */
   getMinLoadedStarTextureLod(): number {
     if (this.numTilesLoadedPerLevel[0] == 384) {
       return 0;

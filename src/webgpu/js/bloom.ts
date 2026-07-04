@@ -1,5 +1,11 @@
+/**
+ * Maximum number of mipmap levels allocated for the bloom texture chain.
+ */
 const MAX_LEVELS = 9;
 
+/**
+ * WGSL Shader source containing shaders for Downsampling, Bloom Filtering, Upsampling, and final Compositing.
+ */
 const WGSL_SHADERS = `
 struct VertexOutput {
   @builtin(position) Position: vec4<f32>,
@@ -8,6 +14,7 @@ struct VertexOutput {
 @vertex
 fn vert_main(@builtin(vertex_index) VertexIndex: u32) -> VertexOutput {
   var out: VertexOutput;
+  // Generate a full-screen triangle quad from a single vertex index.
   var pos = vec2<f32>(
     f32((VertexIndex << 1u) & 2u) - 1.0,
     f32(VertexIndex & 2u) - 1.0
@@ -24,14 +31,22 @@ struct DownsampleUniforms {
 };
 @group(0) @binding(2) var<uniform> u_downsample: DownsampleUniforms;
 
+// Binomial filter coefficients for a 4x4 downsample kernel [1, 3, 3, 1] / 8.
 const WEIGHTS = vec4<f32>(1.0, 3.0, 3.0, 1.0) / 8.0;
 
+/**
+ * Downsample shader using a 4x4 binomial sample grid.
+ * Offsets sample centers by 1.5 texels to perform box-filtered downsampling using bilinear interpolation.
+ */
 @fragment
 fn downsample_main(in: VertexOutput) -> @location(0) vec4<f32> {
   let ij = floor(in.Position.xy);
+  // Shift by 1.5 texels to align sample points with the higher resolution pixels.
   let source_ij = ij * 2.0 - vec2<f32>(1.5);
   let source_uv = source_ij * u_downsample.source_delta_uv;
   var color = vec3<f32>(0.0);
+  
+  // Convolve the 4x4 grid of texels.
   for (var i = 0; i < 4; i++) {
     let wi = WEIGHTS[i];
     for (var j = 0; j < 4; j++) {
@@ -40,16 +55,22 @@ fn downsample_main(in: VertexOutput) -> @location(0) vec4<f32> {
       color += wi * wj * textureSampleLevel(source_texture, linear_sampler, source_uv + delta_uv, 0.0).rgb;
     }
   }
+  // Clamp intensity to float16 maximum (6.55e4) to prevent numerical overflow in rgba16float textures.
   return vec4<f32>(min(color, vec3<f32>(6.55e4)), 1.0);
 }
 
 struct BloomUniforms {
   source_delta_uv: vec2<f32>,
   _pad: vec2<f32>,
+  // Offsets (xy) and weights (z) for a 5x5 Gaussian/bloom filter kernel.
   source_samples_uvw: array<vec4<f32>, 25>,
 };
 @group(0) @binding(2) var<uniform> u_bloom: BloomUniforms;
 
+/**
+ * Applies a 5x5 convolution filter using weights packed into uniforms.
+ * Isolates and broadens light spots across intermediate mipmap resolutions.
+ */
 @fragment
 fn bloom_main(in: VertexOutput) -> @location(0) vec4<f32> {
   let source_uv = (in.Position.xy + vec2<f32>(1.0)) * u_bloom.source_delta_uv;
@@ -61,6 +82,7 @@ fn bloom_main(in: VertexOutput) -> @location(0) vec4<f32> {
   return vec4<f32>(min(color, vec3<f32>(6.55e4)), 1.0);
 }
 
+// Weights representing a 2x2 tent upsampling filter grid.
 const UPSAMPLE_WEIGHTS = array<vec4<f32>, 4>(
   vec4<f32>(1.0, 3.0, 3.0, 9.0) / 16.0,
   vec4<f32>(3.0, 1.0, 9.0, 3.0) / 16.0,
@@ -68,17 +90,24 @@ const UPSAMPLE_WEIGHTS = array<vec4<f32>, 4>(
   vec4<f32>(9.0, 3.0, 3.0, 1.0) / 16.0
 );
 
+/**
+ * Upsamples a lower-resolution texture by interpolating pixel values.
+ * Uses pixel coordinate parity (modulo 2) to select specific tent-filter weights.
+ */
 @fragment
 fn upsample_main(in: VertexOutput) -> @location(0) vec4<f32> {
   let ij = floor(in.Position.xy);
+  // Compute coordinate centers in the lower-resolution source.
   let source_ij = floor((ij - vec2<f32>(1.0)) * 0.5) + vec2<f32>(0.5);
   let source_uv = source_ij * u_downsample.source_delta_uv;
   
+  // Sample a 2x2 block of source pixels.
   let c0 = textureSampleLevel(source_texture, linear_sampler, source_uv, 0.0).rgb;
   let c1 = textureSampleLevel(source_texture, linear_sampler, source_uv + vec2<f32>(u_downsample.source_delta_uv.x, 0.0), 0.0).rgb;
   let c2 = textureSampleLevel(source_texture, linear_sampler, source_uv + vec2<f32>(0.0, u_downsample.source_delta_uv.y), 0.0).rgb;
   let c3 = textureSampleLevel(source_texture, linear_sampler, source_uv + u_downsample.source_delta_uv, 0.0).rgb;
   
+  // Resolve index based on pixel location parity (x-mod-2, y-mod-2).
   let mx = u32(ij.x % 2.0);
   let my = u32(ij.y % 2.0);
   let idx = mx + 2u * my;
@@ -100,10 +129,18 @@ struct RenderUniforms {
 @group(0) @binding(2) var<uniform> u_render: RenderUniforms;
 @group(0) @binding(3) var bloom_texture: texture_2d<f32>;
 
+/**
+ * Standard exponential tonemapping curve: V = pow(1 - exp(-C), 1/2.2)
+ * Smoothly compresses high dynamic values and applies a 2.2 gamma correction.
+ */
 fn toneMap(color: vec3<f32>) -> vec3<f32> {
   return pow(vec3<f32>(1.0) - exp(-color), vec3<f32>(1.0 / 2.2));
 }
 
+/**
+ * ACES Filmic tonemapping curve.
+ * Approximates professional cinematographic film contrast curves.
+ */
 fn toneMapACES(color_in: vec3<f32>) -> vec3<f32> {
   var color = color_in;
   const A = 2.51;
@@ -115,20 +152,28 @@ fn toneMapACES(color_in: vec3<f32>) -> vec3<f32> {
   return pow(color, vec3<f32>(1.0 / 2.2));
 }
 
+/**
+ * Composites the final output frame.
+ * Samples the original rendering and blends it with the blurred bloom glow texture.
+ * Applies exposure scaling, intensity blending, brightness clamping, and final tonemapping.
+ */
 @fragment
 fn render_main(in: VertexOutput) -> @location(0) vec4<f32> {
   let source_uv = (in.Position.xy + vec2<f32>(1.0)) * u_render.source_delta_uv;
   var color = textureSampleLevel(bloom_texture, linear_sampler, 0.5 * in.Position.xy * u_render.bloom_delta_uv, 0.0).rgb;
   
+  // Extract high frequency components from source.
   for (var i = 0; i < 25; i++) {
     let uvw = u_render.source_samples_uvw[i];
     color += uvw.z * textureSampleLevel(source_texture, linear_sampler, source_uv + uvw.xy, 0.0).rgb;
   }
   
   let source_color = textureSampleLevel(source_texture, linear_sampler, source_uv, 0.0).rgb;
+  // Blend source and bloom textures.
   var final_color = mix(source_color, color, u_render.intensity) * u_render.exposure;
-  final_color = min(final_color, vec3<f32>(10.0));
+  final_color = min(final_color, vec3<f32>(10.0)); // Clamp maximum brightness to 10.0.
   
+  // Apply the selected tonemapping algorithm.
   if (u_render.high_contrast == 1u) {
     final_color = toneMapACES(final_color);
   } else {
@@ -138,6 +183,10 @@ fn render_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 `;
 
+/**
+ * Table storing pre-calculated filter coefficients optimized for different display heights.
+ * Each entry maps a vertical height resolution to a 5x5 convolution weight matrix.
+ */
 const BLOOM_FILTERS: (number | number[][])[] = [
   600,
   [[0.537425,0.0200663,0.00720805,0.00159719,0.000907315,0.000275641],
@@ -201,6 +250,10 @@ const BLOOM_FILTERS: (number | number[][])[] = [
    [0.00247558,0.00247558,0.00247558,0.00247558,0.00247558,0.00247558]],
 ];
 
+/**
+ * Bloom implements downsampling, upsampling, and compositing steps
+ * to overlay realistic light bloom on bright scene components.
+ */
 export class Bloom {
   private device: GPUDevice;
   private canvasFormat: GPUTextureFormat;
@@ -230,6 +283,7 @@ export class Bloom {
   private bloomBindGroups: GPUBindGroup[] = [];
   private upsampleBindGroups: GPUBindGroup[] = [];
 
+  // Arrays of Float32Arrays storing compiled 5x5 convolution weight offsets.
   private bloomFilters: Float32Array[] = [];
 
   mipmapTextures: GPUTexture[] = [];
@@ -264,7 +318,7 @@ export class Bloom {
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
       }));
       this.bloomUniformBuffers.push(device.createBuffer({
-        size: 416,
+        size: 416, // Large enough to store 25 sample points (offset_x, offset_y, weight, pad)
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
       }));
       this.upsampleUniformBuffers.push(device.createBuffer({
@@ -277,6 +331,7 @@ export class Bloom {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
     });
 
+    // Setup layouts.
     this.downsampleBindGroupLayout = device.createBindGroupLayout({
       label: 'BloomDownsampleBindGroupLayout',
       entries: [
@@ -316,6 +371,7 @@ export class Bloom {
 
     const pipelineLayout = (layout: GPUBindGroupLayout) => device.createPipelineLayout({ bindGroupLayouts: [layout] });
 
+    // Initialize rendering pipelines.
     this.downsamplePipeline = device.createRenderPipeline({
       label: 'BloomDownsamplePipeline',
       layout: pipelineLayout(this.downsampleBindGroupLayout),
@@ -349,6 +405,7 @@ export class Bloom {
         entryPoint: 'upsample_main',
         targets: [{
           format: 'rgba16float',
+          // Configure additive blend factors to combine upsampled frames with lower levels.
           blend: {
             color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
             alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' }
@@ -377,6 +434,10 @@ export class Bloom {
     this.resize(width, height);
   }
 
+  /**
+   * Reallocates rendering textures and compiles 5x5 convolution weight arrays
+   * whenever the display viewport size is changed.
+   */
   resize(width: number, height: number): void {
     this.width = width;
     this.height = height;
@@ -394,7 +455,9 @@ export class Bloom {
     let w = width;
     let h = height;
 
+    // Allocate downsampled mipmap texture layers.
     while (h > 2 && level < MAX_LEVELS) {
+      // Add a 2-pixel margin around downsampled textures to prevent edge artifacts.
       const mipW = w + 2;
       const mipH = h + 2;
 
@@ -431,6 +494,7 @@ export class Bloom {
       usage: GPUTextureUsage.RENDER_ATTACHMENT
     });
 
+    // Locate the closest matching filter height configuration in the BLOOM_FILTERS catalog.
     this.bloomFilters = [];
     let nearest_size_index = 0;
     let nearest_size = BLOOM_FILTERS[nearest_size_index] as number;
@@ -442,6 +506,9 @@ export class Bloom {
       }
     }
 
+    // Compile 25-point sample arrays for each mipmap level.
+    // The filter coefficients are symmetric: weight at (x, y) equals weight at (abs(x), abs(y)).
+    // Triangular indexing translates ix, iy into a single index of 6 values.
     const filters = BLOOM_FILTERS[nearest_size_index + 1] as number[][];
     for (let i = 0; i < this.numLevels; ++i) {
       const bloomFilter = [];
@@ -453,6 +520,7 @@ export class Bloom {
           const ix = Math.abs(x);
           const index = ix < iy ? (iy * (iy + 1)) / 2 + ix : (ix * (ix + 1)) / 2 + iy;
           const wt = filters[i][index];
+          // Store relative offsets (x/width, y/height), weight, and padding.
           bloomFilter.push(x / mWidth, y / mHeight, wt, 0.0);
         }
       }
@@ -462,6 +530,7 @@ export class Bloom {
     this.createBindGroups();
   }
 
+  /** Constructs BindGroups representing references for each level. */
   private createBindGroups(): void {
     this.downsampleBindGroups = [];
     this.bloomBindGroups = [];
@@ -506,11 +575,16 @@ export class Bloom {
     }
   }
 
+  /** Retrieves the target GPUTextureView where the main scene should render before applying bloom. */
   begin(): GPUTextureView {
     return this.mipmapTextures[0].createView();
   }
 
+  /**
+   * Performs the downsample, filter, upsample, and composite passes.
+   */
   end(commandEncoder: GPUCommandEncoder, canvasTextureView: GPUTextureView, intensity: number, exposure: number, highContrast: boolean): void {
+    // 1. Pack downsampling pixel coordinate delta variables.
     for (let level = 1; level < this.numLevels; ++level) {
       const sourceW = this.mipmapTextures[level - 1].width;
       const sourceH = this.mipmapTextures[level - 1].height;
@@ -518,6 +592,7 @@ export class Bloom {
       this.device.queue.writeBuffer(this.downsampleUniformBuffers[level], 0, data);
     }
 
+    // 2. Pack 5x5 bloom filter weights.
     for (let level = 1; level < this.numLevels; ++level) {
       const sourceW = this.mipmapTextures[level].width;
       const sourceH = this.mipmapTextures[level].height;
@@ -530,6 +605,7 @@ export class Bloom {
       this.device.queue.writeBuffer(this.bloomUniformBuffers[level], 0, bloomData);
     }
 
+    // 3. Pack upsampling delta variables.
     for (let level = this.numLevels - 2; level >= 1; --level) {
       const filterTex = this.filterTextures[level + 1];
       if (!filterTex) continue;
@@ -539,6 +615,7 @@ export class Bloom {
       this.device.queue.writeBuffer(this.upsampleUniformBuffers[level], 0, data);
     }
 
+    // 4. Pack compositor uniforms.
     const sourceW = this.mipmapTextures[0].width;
     const sourceH = this.mipmapTextures[0].height;
     const filterTex1 = this.filterTextures[1];
@@ -563,6 +640,7 @@ export class Bloom {
     }
     this.device.queue.writeBuffer(this.renderUniformBuffer, 0, renderData);
 
+    // 5. Downsampling passes: Downsample source to lower levels (level 1 to numLevels-1).
     for (let level = 1; level < this.numLevels; ++level) {
       const targetW = this.mipmapTextures[level].width - 2;
       const targetH = this.mipmapTextures[level].height - 2;
@@ -578,11 +656,13 @@ export class Bloom {
       });
       passEncoder.setPipeline(this.downsamplePipeline);
       passEncoder.setBindGroup(0, this.downsampleBindGroups[level]);
+      // Viewport offset is 1 pixel to skip the margin borders.
       passEncoder.setViewport(1, 1, targetW, targetH, 0, 1);
       passEncoder.draw(4, 1, 0, 0);
       passEncoder.end();
     }
 
+    // 6. Filtering passes: Apply 5x5 filters (level 1 to numLevels-1).
     for (let level = 1; level < this.numLevels; ++level) {
       const filterTex = this.filterTextures[level];
       if (!filterTex) continue;
@@ -605,6 +685,7 @@ export class Bloom {
       passEncoder.end();
     }
 
+    // 7. Upsampling passes: Combine levels back up (numLevels-2 down to 1).
     for (let level = this.numLevels - 2; level >= 1; --level) {
       const filterTex = this.filterTextures[level];
       if (!filterTex) continue;
@@ -615,7 +696,7 @@ export class Bloom {
         label: `BloomUpsamplePass_Level${level}`,
         colorAttachments: [{
           view: filterTex.createView(),
-          loadOp: 'load',
+          loadOp: 'load', // Additively blend to existing colors
           storeOp: 'store'
         }]
       });
@@ -626,6 +707,7 @@ export class Bloom {
       passEncoder.end();
     }
 
+    // 8. Composite pass: Tonemap and write final pixels to canvas output.
     const compositeBindGroup = this.device.createBindGroup({
       label: 'BloomCompositeBindGroup',
       layout: this.renderBindGroupLayout,
@@ -653,3 +735,4 @@ export class Bloom {
     passEncoder.end();
   }
 }
+

@@ -4,6 +4,11 @@ import { TextureManager } from './texture_manager';
 import { ShaderManager } from './shader_manager';
 import { RocketManager } from './rocket_manager';
 
+/**
+ * CameraView coordinates the primary WebGPU frame cycle, managing the canvas context,
+ * rendering passes (scene backdrop raymarching, local reflection cube map, rocket model overlay,
+ * and HDR bloom post-processing), relativistic orbital calculations, and user mouse drag inputs.
+ */
 export class CameraView {
   model: Model;
   rootElement: HTMLElement;
@@ -37,6 +42,7 @@ export class CameraView {
   private previousMouseY: number | undefined = undefined;
   private hidden = false;
 
+  // Packed parameters representing accretion disk particle geodesics.
   discParticles: Float32Array;
 
   constructor(model: Model, rootElement: HTMLElement, device: GPUDevice) {
@@ -69,13 +75,13 @@ export class CameraView {
       alphaMode: 'opaque'
     });
 
-    // Uniform buffer (432 bytes size)
+    // Allocate uniform buffer (432 bytes layout matching shader parameters).
     this.uniformBuffer = this.device.createBuffer({
       size: 432,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
     });
 
-    // Bind group layout (matches bind_group entry configuration in shader)
+    // Create bind group layouts defining bindings (LUTs, samplers, cubemaps, uniforms).
     this.bindGroupLayout = this.device.createBindGroupLayout({
       entries: [
         { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
@@ -96,6 +102,7 @@ export class CameraView {
       bindGroupLayouts: [this.bindGroupLayout]
     });
 
+    // Initialize sub-managers.
     this.textureManager = new TextureManager(rootElement, this.device);
     this.shaderManager = new ShaderManager(model, this.textureManager, this.device);
     this.rocketManager = new RocketManager(model, this);
@@ -110,9 +117,15 @@ export class CameraView {
     this.previousMouseY = undefined;
     this.hidden = false;
 
-    // Accretion disk particles parameters generation (matching GLSL shader_manager.js)
+    // Accretion disk particles parameters generation (matching GLSL shader_manager.js).
+    // Uses numerical integration of elliptic integrals to compute relativistic orbital phases.
     const rMin = 3.0;
     const rMax = 12.0;
+    
+    /**
+     * Integrates K(k) = integral_0^1 (dy / sqrt((1-y^2)(1 - k^2 * y^2)))
+     * to resolve azimuthal orbit progress limits (dTheta/dPhi) under General Relativity.
+     */
     const computeDthetaDphi = function(u1: number, u2: number, u3: number): number {
       const k2 = (u2 - u1) / (u3 - u1);
       const N = 10000;
@@ -125,6 +138,7 @@ export class CameraView {
       return Math.PI * Math.sqrt(u3 - u1) / (4 * K);
     };
 
+    // Pack 12 particles, each with [u1, u2, phi0, dThetaDphi] data.
     this.discParticles = new Float32Array(12 * 4);
     let idx = 0;
     let seed = 42;
@@ -134,11 +148,11 @@ export class CameraView {
     };
 
     for (let r1 = rMin; r1 < rMax; r1 += 0.75) {
-      const e = 0.1 * random();
+      const e = 0.1 * random(); // Eccentricity variation
       const r2 = r1 * (1.0 + e) / (1.0 - e);
       const u1 = 1 / r2;
       const u2 = 1 / r1;
-      const u3 = 1 - u1 - u2;
+      const u3 = 1 - u1 - u2; // Schwarzschild orbital constraint u1 + u2 + u3 = 1
       const phi0 = 2 * Math.PI * random();
       const dThetaDphi = computeDthetaDphi(u1, u2, u3);
 
@@ -148,6 +162,7 @@ export class CameraView {
       this.discParticles[idx++] = dThetaDphi;
     }
 
+    // Window event listeners.
     window.addEventListener('mousedown', (e) => this.onMouseDown(e));
     window.addEventListener('mousemove', (e) => this.onMouseMove(e));
     window.addEventListener('mouseup', () => this.onMouseUp());
@@ -159,9 +174,11 @@ export class CameraView {
       }
     });
 
+    // Start render loop.
     requestAnimationFrame(() => this.onRender());
   }
 
+  /** Retrieves or rebuilds the BindGroup mapping WebGPU textures and uniform buffers. */
   getBindGroup(): GPUBindGroup | null {
     const tm = this.textureManager;
     const rayDeflectionTexture = tm.rayDeflectionTexture;
@@ -182,6 +199,7 @@ export class CameraView {
       return null;
     }
 
+    // Toggle grid environment maps vs stars map.
     const skyTexture = this.model.grid.getValue() ?
         this.textureManager.gridTexture : this.textureManager.galaxyTexture;
 
@@ -211,12 +229,13 @@ export class CameraView {
     return this.bindGroup;
   }
 
+  /** Packs Schwarzschild physics constants, matrices, and parameters into the uniform buffer. */
   updateUniforms(): void {
     const model = this.model;
     const data = new Float32Array(108);
 
-    data[0] = model.t;
-    data[1] = model.r;
+    data[0] = model.t; // proper time tau
+    data[1] = model.r; // radial coordinate r
     data[2] = model.worldTheta;
     data[3] = model.worldPhi;
 
@@ -230,6 +249,7 @@ export class CameraView {
     data[10] = model.kS[2];
     data[11] = model.kS[3];
 
+    // Local basis axes.
     data[12] = model.eTau[1];
     data[13] = model.eTau[2];
     data[14] = model.eTau[3];
@@ -250,6 +270,7 @@ export class CameraView {
     data[26] = model.eD[3];
     data[27] = 0.0;
 
+    // Starfield coordinate rotation matrix.
     data[28] = model.starsMatrix[0];
     data[29] = model.starsMatrix[3];
     data[30] = model.starsMatrix[6];
@@ -265,6 +286,7 @@ export class CameraView {
     data[38] = model.starsMatrix[8];
     data[39] = 0.0;
 
+    // Screen viewport centers and focal length details.
     const tanFovY = Math.tan(model.fovY / 2);
     const focalLength = this.canvas.height / (2 * tanFovY);
     data[40] = this.canvas.width / 2;
@@ -295,22 +317,26 @@ export class CameraView {
     data[58] = 0.0;
     data[59] = 0.0;
 
+    // Pack accretion disk particles.
     data.set(this.discParticles, 60);
 
     this.device.queue.writeBuffer(this.uniformBuffer, 0, data);
   }
 
+  /** Primary frame render loop callback. */
   onRender(): void {
     if (this.hidden) {
       return;
     }
 
+    // Wait until main WGSL shader code is compiled and loaded.
     const shaderModule = this.shaderManager.getProgram();
     if (!shaderModule) {
       requestAnimationFrame(() => this.onRender());
       return;
     }
 
+    // Lazy compile the main backdrop raymarching pipeline.
     if (!this.pipeline) {
       this.pipeline = this.device.createRenderPipeline({
         label: 'BlackHoleRenderPipeline',
@@ -337,7 +363,7 @@ export class CameraView {
     }
 
     const tauSeconds = Date.now() / 1000.0;
-    const dTauSeconds = tauSeconds - this.lastTauSeconds;
+    const dTauSeconds = (tauSeconds - this.lastTauSeconds);
     this.lastTauSeconds = tauSeconds;
 
     this.updateUniforms();
@@ -345,10 +371,12 @@ export class CameraView {
     const commandEncoder = this.device.createCommandEncoder();
     const textureView = this.context.getCurrentTexture().createView();
     
+    // Render local environment map reflections if rocket model is active.
     if (this.model.rocket.getValue()) {
       this.rocketManager.renderEnvMap(commandEncoder);
     }
     
+    // Draw the black hole raymarching backdrop into the first level of the bloom textures.
     const targetView = this.bloom.begin();
     
     const renderPassDescriptor: GPURenderPassDescriptor = {
@@ -367,11 +395,12 @@ export class CameraView {
     passEncoder.draw(4, 1, 0, 0);
     passEncoder.end();
 
+    // Render the rocket and its flame overlay using a depth stencil attachment for proper depth culling.
     if (this.model.rocket.getValue()) {
       const rocketPassDescriptor: GPURenderPassDescriptor = {
         colorAttachments: [{
           view: targetView,
-          loadOp: 'load',
+          loadOp: 'load', // overlay on top of raymarching background
           storeOp: 'store'
         }],
         depthStencilAttachment: {
@@ -391,6 +420,7 @@ export class CameraView {
       rocketPass.end();
     }
 
+    // Complete the bloom post-processing chain and render final composited image to canvas view.
     this.bloom.end(
       commandEncoder,
       textureView,
@@ -401,12 +431,17 @@ export class CameraView {
 
     this.device.queue.submit([commandEncoder.finish()]);
 
+    // Integrate the physical orbit coordinates forward in time.
     this.model.updateOrbit(dTauSeconds);
 
     requestAnimationFrame(() => this.onRender());
     this.checkFrameRate();
   }
 
+  /**
+   * Monitors performance and disables complex star textures if the frame rate drops below 10 FPS
+   * to protect browser stability.
+   */
   private checkFrameRate(): void {
     const time = Date.now();
     if (!this.lastFrameTime) {
@@ -430,13 +465,16 @@ export class CameraView {
     }
   }
 
+  /** Initiates camera angle updates upon standard mouse dragging. */
   private onMouseDown(event: MouseEvent): void {
     this.previousMouseX = event.screenX;
     this.previousMouseY = event.screenY;
     const target = event.target as HTMLElement;
+    // Drag camera rotation unless clicking on inputs or holding Ctrl.
     this.drag = (target.tagName != 'INPUT') && !event.ctrlKey;
   }
 
+  /** Rotates view yaw and pitch coordinates while dragging. */
   private onMouseMove(event: MouseEvent): void {
     const mouseX = event.screenX;
     const mouseY = event.screenY;
@@ -448,6 +486,7 @@ export class CameraView {
       const prevY = this.previousMouseY ?? mouseY;
       yaw += (prevX - mouseX) / kScale;
       pitch -= (prevY - mouseY) / kScale;
+      // Clamp yaw angular coordinate between 0 and 2*PI.
       this.model.cameraYaw.setValue(
           yaw - 2 * Math.PI * Math.floor(yaw / (2 * Math.PI)));
       this.model.cameraPitch.setValue(pitch);
@@ -460,6 +499,7 @@ export class CameraView {
     this.drag = false;
   }
 
+  /** Resizes all canvas assets and bloom attachments matching new dimensions. */
   private onResize(): void {
     const rootElement = this.rootElement;
     this.devicePixelRatio = this.getDevicePixelRatio();
@@ -474,3 +514,4 @@ export class CameraView {
     return this.model.highDefinition.getValue() ? window.devicePixelRatio : 1;
   }
 }
+
