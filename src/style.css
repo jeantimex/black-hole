@@ -138,44 +138,12 @@ input {
 
 .op-frustum {
   position: absolute;
-  left: 200px;
-  top: 200px;
-  width: 80px;
+  left: 0;
+  top: 0;
+  width: 1px;
   height: 1px;
   background-color: #f00;
   transform-origin: left center;
-}
-
-#op_frustum1 {
-  transform: rotate(10deg);
-}
-
-#op_frustum2 {
-  transform: rotate(20deg);
-}
-
-#op_frustum3 {
-  transform: rotate(30deg);
-}
-
-#op_frustum4 {
-  transform: rotate(40deg);
-}
-
-#op_frustum5 {
-  transform: rotate(-10deg);
-}
-
-#op_frustum6 {
-  transform: rotate(-20deg);
-}
-
-#op_frustum7 {
-  transform: rotate(-30deg);
-}
-
-#op_frustum8 {
-  transform: rotate(-40deg);
 }
 
 .op-info {
