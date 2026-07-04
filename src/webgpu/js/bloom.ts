@@ -1,68 +1,3 @@
-(function() {
-
-const BLOOM_FILTERS = [
-  600,
-  [[0.537425,0.0200663,0.00720805,0.00159719,0.000907315,0.000275641],
-   [0.102792,0.0185013,0.00291111,0.000519003,0.000519003,0.000519003],
-   [0.0704669,0.0181097,0.00232751,0.00232751,0.0015737,0.0015737],
-   [0.0117432,0.0117432,0.00226476,0.00154524,0.00116041,0.00116041],
-   [0.00746695,0.00746695,0.00171226,0.00104832,0.000766638,0.000766638],
-   [0.00478257,0.00478257,0.00100513,0.000818812,0.000397319,0.000397319],
-   [0.0037712,0.0037712,0.000490892,0.000490892,0.000490892,0.000490892],
-   [0.00108603,0.00108603,0.000924505,0.000924505,0.000141375,0],
-   [0.000604275,0.000604275,0.000604275,0.000604275,0.000604275,0.000604275]],
-  800,
-  [[0.368483,0.0216534,0.00816305,0.00188928,0.00108659,0.0003135],
-   [0.136249,0.0234538,0.0044714,0.00035596,0.00035596,0.00035596],
-   [0.115467,0.0273797,0.00361202,0.00361202,0.0024381,0.0024381],
-   [0.0185586,0.0185586,0.00364918,0.00244913,0.00186549,0.00186549],
-   [0.0120676,0.0120676,0.00279834,0.00169769,0.00125113,0.00125113],
-   [0.00782081,0.00782081,0.00165563,0.00133947,0.000653398,0.000653398],
-   [0.00620986,0.00620986,0.0008107,0.0008107,0.0008107,0.0008107],
-   [0.0017856,0.0017856,0.00153169,0.00153169,0.000231589,0],
-   [0.000999842,0.000999842,0.000999842,0.000999842,0.000999842,0.000999842]],
-  1000,
-  [[0.256172,0.0203539,0.00797156,0.00192098,0.00111651,0.000302982],
-   [0.153181,0.0252457,0.0056879,5.24724e-05,5.24724e-05,5.24724e-05],
-   [0.154089,0.0348566,0.00470551,0.00470551,0.00317819,0.00317819],
-   [0.0246407,0.0246407,0.00494194,0.00326092,0.00251954,0.00251954],
-   [0.0163845,0.0163845,0.00384115,0.00230972,0.00171517,0.00171517],
-   [0.010743,0.010743,0.00229079,0.00184054,0.000902617,0.000902617],
-   [0.00858938,0.00858938,0.00112463,0.00112463,0.00112463,0.00112463],
-   [0.00246603,0.00246603,0.0021316,0.0021316,0.000318642,0],
-   [0.00138965,0.00138965,0.00138965,0.00138965,0.00138965,0.00138965]],
-  1200,
-  [[0.183275,0.0181576,0.00737853,0.00184847,0.00110057,0.000302961],
-   [0.155444,0.026573,0.00631122,0,0,0],
-   [0.175386,0.0406837,0.00558637,0.00558637,0.00379344,0.00379344],
-   [0.0298822,0.0298822,0.00611926,0.00396558,0.00310871,0.00310871],
-   [0.0203221,0.0203221,0.00481554,0.00287054,0.00214781,0.00214781],
-   [0.0134794,0.0134794,0.00289524,0.00230992,0.00113896,0.00113896],
-   [0.0108519,0.0108519,0.00142504,0.00142504,0.00142504,0.00142504],
-   [0.00311065,0.00311065,0.0027096,0.0027096,0.000400402,0],
-   [0.00176416,0.00176416,0.00176416,0.00176416,0.00176416,0.00176416]],
-  1400,
-  [[0.13507,0.015829,0.00665188,0.0017314,0.00105678,0.000303019],
-   [0.150222,0.0270593,0.00654101,0,0,0],
-   [0.188342,0.0450054,0.00639373,0.0062499,0.00430739,0.00430739],
-   [0.034393,0.034393,0.00718937,0.00457886,0.00363942,0.00363942],
-   [0.0239205,0.0239205,0.00572745,0.00338534,0.00255211,0.00255211],
-   [0.016048,0.016048,0.00347179,0.00275076,0.00136368,0.00136368],
-   [0.013009,0.013009,0.00171332,0.00171332,0.00171332,0.00171332],
-   [0.00372297,0.00372297,0.00326808,0.00326808,0.000477361,0],
-   [0.00212503,0.00212503,0.00212503,0.00212503,0.00212503,0.00212503]],
-  1600,
-  [[0.102246,0.013671,0.00592138,0.00159768,0.00100127,0.000299669],
-   [0.14157,0.026801,0.00657111,0,0,0],
-   [0.19617,0.0482116,0.00708177,0.0067665,0.00473424,0.00473424],
-   [0.0382986,0.0382986,0.00816852,0.00511466,0.00412131,0.00412131],
-   [0.0272343,0.0272343,0.00658764,0.00386174,0.00293299,0.00293299],
-   [0.0184784,0.0184784,0.00402643,0.00316811,0.00157908,0.00157908],
-   [0.0150825,0.0150825,0.00199223,0.00199223,0.00199223,0.00199223],
-   [0.00430923,0.00430923,0.00381212,0.00381212,0.00055036,0],
-   [0.00247558,0.00247558,0.00247558,0.00247558,0.00247558,0.00247558]],
-];
-
 const MAX_LEVELS = 9;
 
 const WGSL_SHADERS = `
@@ -203,12 +138,110 @@ fn render_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 `;
 
-class Bloom {
-  constructor(device, canvasFormat, width, height) {
+const BLOOM_FILTERS: (number | number[][])[] = [
+  600,
+  [[0.537425,0.0200663,0.00720805,0.00159719,0.000907315,0.000275641],
+   [0.102792,0.0185013,0.00291111,0.000519003,0.000519003,0.000519003],
+   [0.0704669,0.0181097,0.00232751,0.00232751,0.0015737,0.0015737],
+   [0.0117432,0.0117432,0.00226476,0.00154524,0.00116041,0.00116041],
+   [0.00746695,0.00746695,0.00171226,0.00104832,0.000766638,0.000766638],
+   [0.00478257,0.00478257,0.00100513,0.000818812,0.000397319,0.000397319],
+   [0.0037712,0.0037712,0.000490892,0.000490892,0.000490892,0.000490892],
+   [0.00108603,0.00108603,0.000924505,0.000924505,0.000141375,0],
+   [0.000604275,0.000604275,0.000604275,0.000604275,0.000604275,0.000604275]],
+  800,
+  [[0.368483,0.0216534,0.00816305,0.00188928,0.00108659,0.0003135],
+   [0.136249,0.0234538,0.0044714,0.00035596,0.00035596,0.00035596],
+   [0.115467,0.0273797,0.00361202,0.00361202,0.0024381,0.0024381],
+   [0.0185586,0.0185586,0.00364918,0.00244913,0.00186549,0.00186549],
+   [0.0120676,0.0120676,0.00279834,0.00169769,0.00125113,0.00125113],
+   [0.00782081,0.00782081,0.00165563,0.00133947,0.000653398,0.000653398],
+   [0.00620986,0.00620986,0.0008107,0.0008107,0.0008107,0.0008107],
+   [0.0017856,0.0017856,0.00153169,0.00153169,0.000231589,0],
+   [0.000999842,0.000999842,0.000999842,0.000999842,0.000999842,0.000999842]],
+  1000,
+  [[0.256172,0.0203539,0.00797156,0.00192098,0.00111651,0.000302982],
+   [0.153181,0.0252457,0.0056879,5.24724e-05,5.24724e-05,5.24724e-05],
+   [0.154089,0.0348566,0.00470551,0.00470551,0.00317819,0.00317819],
+   [0.0246407,0.0246407,0.00494194,0.00326092,0.00251954,0.00251954],
+   [0.0163845,0.0163845,0.00384115,0.00230972,0.00171517,0.00171517],
+   [0.010743,0.010743,0.00229079,0.00184054,0.000902617,0.000902617],
+   [0.00858938,0.00858938,0.00112463,0.00112463,0.00112463,0.00112463],
+   [0.00246603,0.00246603,0.0021316,0.0021316,0.000318642,0],
+   [0.00138965,0.00138965,0.00138965,0.00138965,0.00138965,0.00138965]],
+  1200,
+  [[0.183275,0.0181576,0.00737853,0.00184847,0.00110057,0.000302961],
+   [0.155444,0.026573,0.00631122,0,0,0],
+   [0.175386,0.0406837,0.00558637,0.00558637,0.00379344,0.00379344],
+   [0.0298822,0.0298822,0.00611926,0.00396558,0.00310871,0.00310871],
+   [0.0203221,0.0203221,0.00481554,0.00287054,0.00214781,0.00214781],
+   [0.0134794,0.0134794,0.00289524,0.00230992,0.00113896,0.00113896],
+   [0.0108519,0.0108519,0.00142504,0.00142504,0.00142504,0.00142504],
+   [0.00311065,0.00311065,0.0027096,0.0027096,0.000400402,0],
+   [0.00176416,0.00176416,0.00176416,0.00176416,0.00176416,0.00176416]],
+  1400,
+  [[0.13507,0.015829,0.00665188,0.0017314,0.00105678,0.000303019],
+   [0.150222,0.0270593,0.00654101,0,0,0],
+   [0.188342,0.0450054,0.00639373,0.0062499,0.00430739,0.00430739],
+   [0.034393,0.034393,0.00718937,0.00457886,0.00363942,0.00363942],
+   [0.0239205,0.0239205,0.00572745,0.00338534,0.00255211,0.00255211],
+   [0.016048,0.016048,0.00347179,0.00275076,0.00136368,0.00136368],
+   [0.013009,0.013009,0.00171332,0.00171332,0.00171332,0.00171332],
+   [0.00372297,0.00372297,0.00326808,0.00326808,0.000477361,0],
+   [0.00212503,0.00212503,0.00212503,0.00212503,0.00212503,0.00212503]],
+  1600,
+  [[0.102246,0.013671,0.00592138,0.00159768,0.00100127,0.000299669],
+   [0.14157,0.026801,0.00657111,0,0,0],
+   [0.19617,0.0482116,0.00708177,0.0067665,0.00473424,0.00473424],
+   [0.0382986,0.0382986,0.00816852,0.00511466,0.00412131,0.00412131],
+   [0.0272343,0.0272343,0.00658764,0.00386174,0.00293299,0.00293299],
+   [0.0184784,0.0184784,0.00402643,0.00316811,0.00157908,0.00157908],
+   [0.0150825,0.0150825,0.00199223,0.00199223,0.00199223,0.00199223],
+   [0.00430923,0.00430923,0.00381212,0.00381212,0.00055036,0],
+   [0.00247558,0.00247558,0.00247558,0.00247558,0.00247558,0.00247558]],
+];
+
+export class Bloom {
+  private device: GPUDevice;
+  private canvasFormat: GPUTextureFormat;
+  private width: number;
+  private height: number;
+  private numLevels: number;
+
+  private linearSampler: GPUSampler;
+  private shaderModule: GPUShaderModule;
+
+  private downsampleUniformBuffers: GPUBuffer[] = [];
+  private bloomUniformBuffers: GPUBuffer[] = [];
+  private upsampleUniformBuffers: GPUBuffer[] = [];
+  private renderUniformBuffer: GPUBuffer;
+
+  private downsampleBindGroupLayout: GPUBindGroupLayout;
+  private bloomBindGroupLayout: GPUBindGroupLayout;
+  private upsampleBindGroupLayout: GPUBindGroupLayout;
+  private renderBindGroupLayout: GPUBindGroupLayout;
+
+  private downsamplePipeline: GPURenderPipeline;
+  private bloomPipeline: GPURenderPipeline;
+  private upsamplePipeline: GPURenderPipeline;
+  private renderPipeline: GPURenderPipeline;
+
+  private downsampleBindGroups: GPUBindGroup[] = [];
+  private bloomBindGroups: GPUBindGroup[] = [];
+  private upsampleBindGroups: GPUBindGroup[] = [];
+
+  private bloomFilters: Float32Array[] = [];
+
+  mipmapTextures: GPUTexture[] = [];
+  filterTextures: (GPUTexture | null)[] = [];
+  depthTexture: GPUTexture | null = null;
+
+  constructor(device: GPUDevice, canvasFormat: GPUTextureFormat, width: number, height: number) {
     this.device = device;
     this.canvasFormat = canvasFormat;
     this.width = width;
     this.height = height;
+    this.numLevels = 0;
 
     this.linearSampler = device.createSampler({
       addressModeU: 'clamp-to-edge',
@@ -281,7 +314,7 @@ class Bloom {
       ]
     });
 
-    const pipelineLayout = (layout) => device.createPipelineLayout({ bindGroupLayouts: [layout] });
+    const pipelineLayout = (layout: GPUBindGroupLayout) => device.createPipelineLayout({ bindGroupLayouts: [layout] });
 
     this.downsamplePipeline = device.createRenderPipeline({
       label: 'BloomDownsamplePipeline',
@@ -337,18 +370,18 @@ class Bloom {
       primitive: { topology: 'triangle-strip' }
     });
 
-    this.mipmapTextures = null;
-    this.filterTextures = null;
+    this.mipmapTextures = [];
+    this.filterTextures = [];
     this.depthTexture = null;
 
     this.resize(width, height);
   }
 
-  resize(width, height) {
+  resize(width: number, height: number): void {
     this.width = width;
     this.height = height;
 
-    if (this.mipmapTextures) {
+    if (this.mipmapTextures.length > 0) {
       for (let t of this.mipmapTextures) { if (t) t.destroy(); }
       for (let t of this.filterTextures) { if (t) t.destroy(); }
       if (this.depthTexture) this.depthTexture.destroy();
@@ -400,15 +433,16 @@ class Bloom {
 
     this.bloomFilters = [];
     let nearest_size_index = 0;
-    let nearest_size = BLOOM_FILTERS[nearest_size_index];
+    let nearest_size = BLOOM_FILTERS[nearest_size_index] as number;
     for (let i = 2; i < BLOOM_FILTERS.length; i += 2) {
-      if (Math.abs(BLOOM_FILTERS[i] - height) < Math.abs(nearest_size - height)) {
+      const currentSize = BLOOM_FILTERS[i] as number;
+      if (Math.abs(currentSize - height) < Math.abs(nearest_size - height)) {
         nearest_size_index = i;
-        nearest_size = BLOOM_FILTERS[i];
+        nearest_size = currentSize;
       }
     }
 
-    const filters = BLOOM_FILTERS[nearest_size_index + 1];
+    const filters = BLOOM_FILTERS[nearest_size_index + 1] as number[][];
     for (let i = 0; i < this.numLevels; ++i) {
       const bloomFilter = [];
       const mWidth = this.mipmapTextures[i].width;
@@ -428,7 +462,7 @@ class Bloom {
     this.createBindGroups();
   }
 
-  createBindGroups() {
+  private createBindGroups(): void {
     this.downsampleBindGroups = [];
     this.bloomBindGroups = [];
     this.upsampleBindGroups = [];
@@ -458,10 +492,12 @@ class Bloom {
     }
 
     for (let level = 1; level < this.numLevels - 1; ++level) {
+      const filterTex = this.filterTextures[level + 1];
+      if (!filterTex) continue;
       const bg = this.device.createBindGroup({
         layout: this.upsampleBindGroupLayout,
         entries: [
-          { binding: 0, resource: this.filterTextures[level + 1].createView() },
+          { binding: 0, resource: filterTex.createView() },
           { binding: 1, resource: this.linearSampler },
           { binding: 2, resource: { buffer: this.upsampleUniformBuffers[level] } }
         ]
@@ -470,11 +506,11 @@ class Bloom {
     }
   }
 
-  begin() {
+  begin(): GPUTextureView {
     return this.mipmapTextures[0].createView();
   }
 
-  end(commandEncoder, canvasTextureView, intensity, exposure, highContrast) {
+  end(commandEncoder: GPUCommandEncoder, canvasTextureView: GPUTextureView, intensity: number, exposure: number, highContrast: boolean): void {
     for (let level = 1; level < this.numLevels; ++level) {
       const sourceW = this.mipmapTextures[level - 1].width;
       const sourceH = this.mipmapTextures[level - 1].height;
@@ -495,16 +531,20 @@ class Bloom {
     }
 
     for (let level = this.numLevels - 2; level >= 1; --level) {
-      const sourceW = this.filterTextures[level + 1].width;
-      const sourceH = this.filterTextures[level + 1].height;
+      const filterTex = this.filterTextures[level + 1];
+      if (!filterTex) continue;
+      const sourceW = filterTex.width;
+      const sourceH = filterTex.height;
       const data = new Float32Array([1.0 / sourceW, 1.0 / sourceH, 0.0, 0.0]);
       this.device.queue.writeBuffer(this.upsampleUniformBuffers[level], 0, data);
     }
 
     const sourceW = this.mipmapTextures[0].width;
     const sourceH = this.mipmapTextures[0].height;
-    const bloomW = this.filterTextures[1].width;
-    const bloomH = this.filterTextures[1].height;
+    const filterTex1 = this.filterTextures[1];
+    if (!filterTex1) return;
+    const bloomW = filterTex1.width;
+    const bloomH = filterTex1.height;
 
     const renderData = new Float32Array(8 + 100);
     renderData[0] = 1.0 / sourceW;
@@ -544,13 +584,15 @@ class Bloom {
     }
 
     for (let level = 1; level < this.numLevels; ++level) {
-      const targetW = this.filterTextures[level].width;
-      const targetH = this.filterTextures[level].height;
+      const filterTex = this.filterTextures[level];
+      if (!filterTex) continue;
+      const targetW = filterTex.width;
+      const targetH = filterTex.height;
 
       const passEncoder = commandEncoder.beginRenderPass({
         label: `BloomFilterPass_Level${level}`,
         colorAttachments: [{
-          view: this.filterTextures[level].createView(),
+          view: filterTex.createView(),
           loadOp: 'clear',
           clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
           storeOp: 'store'
@@ -564,13 +606,15 @@ class Bloom {
     }
 
     for (let level = this.numLevels - 2; level >= 1; --level) {
-      const targetW = this.filterTextures[level].width;
-      const targetH = this.filterTextures[level].height;
+      const filterTex = this.filterTextures[level];
+      if (!filterTex) continue;
+      const targetW = filterTex.width;
+      const targetH = filterTex.height;
 
       const passEncoder = commandEncoder.beginRenderPass({
         label: `BloomUpsamplePass_Level${level}`,
         colorAttachments: [{
-          view: this.filterTextures[level].createView(),
+          view: filterTex.createView(),
           loadOp: 'load',
           storeOp: 'store'
         }]
@@ -589,7 +633,7 @@ class Bloom {
         { binding: 0, resource: this.mipmapTextures[0].createView() },
         { binding: 1, resource: this.linearSampler },
         { binding: 2, resource: { buffer: this.renderUniformBuffer } },
-        { binding: 3, resource: this.filterTextures[1].createView() }
+        { binding: 3, resource: filterTex1.createView() }
       ]
     });
 
@@ -609,6 +653,3 @@ class Bloom {
     passEncoder.end();
   }
 }
-
-BlackHoleShaderDemoApp.Bloom = Bloom;
-})();

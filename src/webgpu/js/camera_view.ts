@@ -1,21 +1,67 @@
-(function(model, Bloom, TextureManager, ShaderManager, RocketManager) {
+import { Model } from '../../common/model';
+import { Bloom } from './bloom';
+import { TextureManager } from './texture_manager';
+import { ShaderManager } from './shader_manager';
+import { RocketManager } from './rocket_manager';
 
-class CameraView {
-  constructor(model, rootElement, device) {
+export class CameraView {
+  model: Model;
+  rootElement: HTMLElement;
+  device: GPUDevice;
+  devicePixelRatio: number;
+  canvas: HTMLCanvasElement;
+  errorPanel: HTMLElement;
+  errorPanelShown: boolean;
+
+  context: GPUCanvasContext;
+  canvasFormat: GPUTextureFormat;
+  uniformBuffer: GPUBuffer;
+  bindGroupLayout: GPUBindGroupLayout;
+  pipelineLayout: GPUPipelineLayout;
+
+  pipeline: GPURenderPipeline | null = null;
+  bindGroup: GPUBindGroup | null = null;
+  cachedSkyTexture: GPUTexture | null = null;
+
+  textureManager: TextureManager;
+  shaderManager: ShaderManager;
+  rocketManager: RocketManager;
+  bloom: Bloom;
+
+  private lastTauSeconds: number;
+  private lastFrameTime: number | undefined = undefined;
+  private numFrames = 0;
+
+  private drag = false;
+  private previousMouseX: number | undefined = undefined;
+  private previousMouseY: number | undefined = undefined;
+  private hidden = false;
+
+  discParticles: Float32Array;
+
+  constructor(model: Model, rootElement: HTMLElement, device: GPUDevice) {
     this.model = model;
     this.rootElement = rootElement;
     this.device = device;
     this.devicePixelRatio = this.getDevicePixelRatio();
-    this.canvas = rootElement.querySelector('#camera_view');
+
+    const canvasEl = rootElement.querySelector('#camera_view');
+    const errEl = rootElement.querySelector('#cv_error_panel');
+    if (!canvasEl) throw new Error("camera_view canvas not found");
+    if (!errEl) throw new Error("cv_error_panel not found");
+
+    this.canvas = canvasEl as HTMLCanvasElement;
     this.canvas.style.width = `${rootElement.clientWidth}px`;
     this.canvas.style.height = `${rootElement.clientHeight}px`;
     this.canvas.width = rootElement.clientWidth * this.devicePixelRatio;
     this.canvas.height = rootElement.clientHeight * this.devicePixelRatio;
-    this.errorPanel = rootElement.querySelector('#cv_error_panel');
+    this.errorPanel = errEl as HTMLElement;
     this.errorPanelShown = false;
 
     // WebGPU Context Setup
-    this.context = this.canvas.getContext('webgpu');
+    const ctx = this.canvas.getContext('webgpu');
+    if (!ctx) throw new Error("Could not get WebGPU context");
+    this.context = ctx;
     this.canvasFormat = navigator.gpu.getPreferredCanvasFormat();
     this.context.configure({
       device: this.device,
@@ -50,10 +96,6 @@ class CameraView {
       bindGroupLayouts: [this.bindGroupLayout]
     });
 
-    this.pipeline = null;
-    this.bindGroup = null;
-    this.cachedSkyTexture = null;
-
     this.textureManager = new TextureManager(rootElement, this.device);
     this.shaderManager = new ShaderManager(model, this.textureManager, this.device);
     this.rocketManager = new RocketManager(model, this);
@@ -71,7 +113,7 @@ class CameraView {
     // Accretion disk particles parameters generation (matching GLSL shader_manager.js)
     const rMin = 3.0;
     const rMax = 12.0;
-    const computeDthetaDphi = function(u1, u2, u3) {
+    const computeDthetaDphi = function(u1: number, u2: number, u3: number): number {
       const k2 = (u2 - u1) / (u3 - u1);
       const N = 10000;
       let K = 0.0;
@@ -108,9 +150,9 @@ class CameraView {
 
     window.addEventListener('mousedown', (e) => this.onMouseDown(e));
     window.addEventListener('mousemove', (e) => this.onMouseMove(e));
-    window.addEventListener('mouseup', (e) => this.onMouseUp(e));
-    window.addEventListener('resize', (e) => this.onResize(e));
-    document.addEventListener('visibilitychange', (e) => {
+    window.addEventListener('mouseup', () => this.onMouseUp());
+    window.addEventListener('resize', () => this.onResize());
+    document.addEventListener('visibilitychange', () => {
       this.hidden = document.hidden;
       if (!this.hidden) {
         this.lastFrameTime = undefined;
@@ -120,22 +162,30 @@ class CameraView {
     requestAnimationFrame(() => this.onRender());
   }
 
-  getBindGroup() {
+  getBindGroup(): GPUBindGroup | null {
     const tm = this.textureManager;
-    if (!tm.rayDeflectionTexture ||
-        !tm.rayInverseRadiusTexture ||
-        !tm.noiseTexture ||
-        !tm.galaxyTexture ||
-        !tm.starTexture ||
-        !tm.starTexture2 ||
-        !tm.blackbodyTexture ||
-        !tm.dopplerTexture) {
-      // Waiting for textures to load
+    const rayDeflectionTexture = tm.rayDeflectionTexture;
+    const rayInverseRadiusTexture = tm.rayInverseRadiusTexture;
+    const noiseTexture = tm.noiseTexture;
+    const starTexture = tm.starTexture;
+    const starTexture2 = tm.starTexture2;
+    const blackbodyTexture = tm.blackbodyTexture;
+    const dopplerTexture = tm.dopplerTexture;
+
+    if (!rayDeflectionTexture ||
+        !rayInverseRadiusTexture ||
+        !noiseTexture ||
+        !starTexture ||
+        !starTexture2 ||
+        !blackbodyTexture ||
+        !dopplerTexture) {
       return null;
     }
 
     const skyTexture = this.model.grid.getValue() ?
         this.textureManager.gridTexture : this.textureManager.galaxyTexture;
+
+    if (!skyTexture) return null;
 
     if (this.bindGroup && this.cachedSkyTexture === skyTexture) {
       return this.bindGroup;
@@ -147,67 +197,59 @@ class CameraView {
       entries: [
         { binding: 0, resource: { buffer: this.uniformBuffer } },
         { binding: 1, resource: this.textureManager.linearSampler },
-        { binding: 2, resource: this.textureManager.rayDeflectionTexture.createView() },
-        { binding: 3, resource: this.textureManager.rayInverseRadiusTexture.createView() },
+        { binding: 2, resource: rayDeflectionTexture.createView() },
+        { binding: 3, resource: rayInverseRadiusTexture.createView() },
         { binding: 4, resource: skyTexture.createView({ dimension: 'cube' }) },
-        { binding: 5, resource: this.textureManager.starTexture.createView({ dimension: 'cube' }) },
-        { binding: 6, resource: this.textureManager.starTexture2.createView({ dimension: 'cube' }) },
-        { binding: 7, resource: this.textureManager.blackbodyTexture.createView() },
-        { binding: 8, resource: this.textureManager.dopplerTexture.createView() },
-        { binding: 9, resource: this.textureManager.noiseTexture.createView() },
+        { binding: 5, resource: starTexture.createView({ dimension: 'cube' }) },
+        { binding: 6, resource: starTexture2.createView({ dimension: 'cube' }) },
+        { binding: 7, resource: blackbodyTexture.createView() },
+        { binding: 8, resource: dopplerTexture.createView() },
+        { binding: 9, resource: noiseTexture.createView() },
         { binding: 10, resource: this.textureManager.nearestSampler }
       ]
     });
     return this.bindGroup;
   }
 
-  updateUniforms() {
+  updateUniforms(): void {
     const model = this.model;
     const data = new Float32Array(108);
 
-    // camera_position: vec4
     data[0] = model.t;
     data[1] = model.r;
     data[2] = model.worldTheta;
     data[3] = model.worldPhi;
 
-    // p: vec3 + padding
     data[4] = model.p[0];
     data[5] = model.p[1];
     data[6] = model.p[2];
     data[7] = 0.0;
 
-    // k_s: vec4
     data[8] = model.kS[0];
     data[9] = model.kS[1];
     data[10] = model.kS[2];
     data[11] = model.kS[3];
 
-    // e_tau: vec3 + padding
     data[12] = model.eTau[1];
     data[13] = model.eTau[2];
     data[14] = model.eTau[3];
     data[15] = 0.0;
 
-    // e_w: vec3 + padding
     data[16] = model.eW[1];
     data[17] = model.eW[2];
     data[18] = model.eW[3];
     data[19] = 0.0;
 
-    // e_h: vec3 + padding
     data[20] = model.eH[1];
     data[21] = model.eH[2];
     data[22] = model.eH[3];
     data[23] = 0.0;
 
-    // e_d: vec3 + padding
     data[24] = model.eD[1];
     data[25] = model.eD[2];
     data[26] = model.eD[3];
     data[27] = 0.0;
 
-    // stars_orientation: mat3x3 columns
     data[28] = model.starsMatrix[0];
     data[29] = model.starsMatrix[3];
     data[30] = model.starsMatrix[6];
@@ -223,7 +265,6 @@ class CameraView {
     data[38] = model.starsMatrix[8];
     data[39] = 0.0;
 
-    // camera_size: vec3 + padding
     const tanFovY = Math.tan(model.fovY / 2);
     const focalLength = this.canvas.height / (2 * tanFovY);
     data[40] = this.canvas.width / 2;
@@ -231,13 +272,11 @@ class CameraView {
     data[42] = focalLength;
     data[43] = 0.0;
 
-    // disc_params: vec3 + padding
     data[44] = model.discDensity.getValue();
     data[45] = model.discOpacity.getValue();
     data[46] = model.discTemperature.getValue();
     data[47] = 0.0;
 
-    // scalars & flags
     data[48] = model.exposure.getValue();
     data[49] = model.bloom.getValue();
 
@@ -251,34 +290,28 @@ class CameraView {
     uintView[54] = model.stars.getValue() ? 1 : 0;
     uintView[55] = model.highContrast.getValue() ? 1 : 0;
 
-    // fovY & padding to float 60
     data[56] = model.fovY;
     data[57] = 0.0;
     data[58] = 0.0;
     data[59] = 0.0;
 
-    // disc_particles
     data.set(this.discParticles, 60);
 
     this.device.queue.writeBuffer(this.uniformBuffer, 0, data);
-
-    // Uniforms updated
   }
 
-  onRender() {
+  onRender(): void {
     if (this.hidden) {
       return;
     }
 
     const shaderModule = this.shaderManager.getProgram();
     if (!shaderModule) {
-      // Waiting for textures/shader to be ready
       requestAnimationFrame(() => this.onRender());
       return;
     }
 
     if (!this.pipeline) {
-      // Creating WebGPU render pipeline
       this.pipeline = this.device.createRenderPipeline({
         label: 'BlackHoleRenderPipeline',
         layout: this.pipelineLayout,
@@ -295,7 +328,6 @@ class CameraView {
           topology: 'triangle-strip'
         }
       });
-      // WebGPU render pipeline created successfully
     }
 
     const bindGroup = this.getBindGroup();
@@ -304,22 +336,12 @@ class CameraView {
       return;
     }
 
-    if (!this.firstFrameRendered) {
-      this.firstFrameRendered = true;
-    }
-
-    if (this.devicePixelRatio != this.getDevicePixelRatio()) {
-      this.onResize();
-    }
-
     const tauSeconds = Date.now() / 1000.0;
     const dTauSeconds = tauSeconds - this.lastTauSeconds;
     this.lastTauSeconds = tauSeconds;
 
-    // Update uniforms
     this.updateUniforms();
 
-    // Begin WebGPU Render Pass
     const commandEncoder = this.device.createCommandEncoder();
     const textureView = this.context.getCurrentTexture().createView();
     
@@ -329,7 +351,7 @@ class CameraView {
     
     const targetView = this.bloom.begin();
     
-    const renderPassDescriptor = {
+    const renderPassDescriptor: GPURenderPassDescriptor = {
       colorAttachments: [{
         view: targetView,
         clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
@@ -342,19 +364,18 @@ class CameraView {
     passEncoder.setPipeline(this.pipeline);
     passEncoder.setBindGroup(0, bindGroup);
     passEncoder.setViewport(1, 1, this.canvas.width, this.canvas.height, 0, 1);
-    passEncoder.draw(4, 1, 0, 0); // draw fullscreen quad (4 vertices)
+    passEncoder.draw(4, 1, 0, 0);
     passEncoder.end();
 
-    // Draw the rocket and its plume if enabled
     if (this.model.rocket.getValue()) {
-      const rocketPassDescriptor = {
+      const rocketPassDescriptor: GPURenderPassDescriptor = {
         colorAttachments: [{
           view: targetView,
           loadOp: 'load',
           storeOp: 'store'
         }],
         depthStencilAttachment: {
-          view: this.bloom.depthTexture.createView(),
+          view: this.bloom.depthTexture!.createView(),
           depthClearValue: 1.0,
           depthLoadOp: 'clear',
           depthStoreOp: 'discard'
@@ -370,7 +391,6 @@ class CameraView {
       rocketPass.end();
     }
 
-    // Run bloom downsample, filter, upsample, and composite passes
     this.bloom.end(
       commandEncoder,
       textureView,
@@ -387,13 +407,13 @@ class CameraView {
     this.checkFrameRate();
   }
 
-  checkFrameRate() {
-    this.numFrames += 1;
+  private checkFrameRate(): void {
     const time = Date.now();
     if (!this.lastFrameTime) {
       this.lastFrameTime = time;
       this.numFrames = 0;
     }
+    this.numFrames += 1;
     if (time > this.lastFrameTime + 1000) {
       if (this.numFrames <= 10 && this.model.stars.getValue() && 
           !this.errorPanelShown) {
@@ -401,8 +421,8 @@ class CameraView {
         this.errorPanel.innerHTML = 'Stars have been automatically disabled ' +
             'to improve performance. You can re-enable them from the left ' +
             'hand side panel.';
-        this.errorPanel.classList.toggle('cv-hidden');
-        this.errorPanel.classList.toggle('cv-warning');
+        this.errorPanel.classList.toggle('cv-hidden', false);
+        this.errorPanel.classList.toggle('cv-warning', true);
         this.errorPanelShown = true;
       }
       this.lastFrameTime = time;
@@ -410,21 +430,24 @@ class CameraView {
     }
   }
 
-  onMouseDown(event) {
+  private onMouseDown(event: MouseEvent): void {
     this.previousMouseX = event.screenX;
     this.previousMouseY = event.screenY;
-    this.drag = (event.target.tagName != 'INPUT') && !event.ctrlKey;
+    const target = event.target as HTMLElement;
+    this.drag = (target.tagName != 'INPUT') && !event.ctrlKey;
   }
 
-  onMouseMove(event) {
+  private onMouseMove(event: MouseEvent): void {
     const mouseX = event.screenX;
     const mouseY = event.screenY;
     if (this.drag) {
       const kScale = 500;
       let yaw = this.model.cameraYaw.getValue();
       let pitch = this.model.cameraPitch.getValue();
-      yaw += (this.previousMouseX - mouseX) / kScale;
-      pitch -= (this.previousMouseY - mouseY) / kScale;
+      const prevX = this.previousMouseX ?? mouseX;
+      const prevY = this.previousMouseY ?? mouseY;
+      yaw += (prevX - mouseX) / kScale;
+      pitch -= (prevY - mouseY) / kScale;
       this.model.cameraYaw.setValue(
           yaw - 2 * Math.PI * Math.floor(yaw / (2 * Math.PI)));
       this.model.cameraPitch.setValue(pitch);
@@ -433,11 +456,11 @@ class CameraView {
     this.previousMouseY = mouseY;
   }
 
-  onMouseUp(event) {
+  private onMouseUp(): void {
     this.drag = false;
   }
 
-  onResize(event) {
+  private onResize(): void {
     const rootElement = this.rootElement;
     this.devicePixelRatio = this.getDevicePixelRatio();
     this.canvas.style.width = `${rootElement.clientWidth}px`;
@@ -447,60 +470,7 @@ class CameraView {
     this.bloom.resize(this.canvas.width, this.canvas.height);
   }
 
-  getDevicePixelRatio() {
+  private getDevicePixelRatio(): number {
     return this.model.highDefinition.getValue() ? window.devicePixelRatio : 1;
   }
 }
-
-window.addEventListener('DOMContentLoaded', async () => {
-  if (window.BlackHoleShaderDemoApp.cameraViewInitialized) return;
-  window.BlackHoleShaderDemoApp.cameraViewInitialized = true;
-
-  window.addEventListener('error', (event) => {
-    const errorPanel = document.querySelector('#cv_error_panel');
-    if (errorPanel) {
-      errorPanel.innerHTML = 'JS Error: ' + event.message;
-      errorPanel.classList.toggle('cv-hidden', false);
-    }
-  });
-
-  window.addEventListener('unhandledrejection', (event) => {
-    const errorPanel = document.querySelector('#cv_error_panel');
-    if (errorPanel) {
-      errorPanel.innerHTML = 'Promise Error: ' + event.reason;
-      errorPanel.classList.toggle('cv-hidden', false);
-    }
-  });
-
-  if (!navigator.gpu) {
-    const errorPanel = document.querySelector('#cv_error_panel');
-    if (errorPanel) {
-      errorPanel.innerHTML = 'WebGPU is not supported in this browser. Please use a WebGPU-enabled browser (like Chrome or Edge).';
-      errorPanel.classList.toggle('cv-hidden', false);
-    }
-    return;
-  }
-
-  const adapter = await navigator.gpu.requestAdapter();
-  if (!adapter) {
-    const errorPanel = document.querySelector('#cv_error_panel');
-    if (errorPanel) {
-      errorPanel.innerHTML = 'Failed to request WebGPU adapter.';
-      errorPanel.classList.toggle('cv-hidden', false);
-    }
-    return;
-  }
-
-  const requiredFeatures = [];
-  if (adapter.features.has('float32-filterable')) {
-    requiredFeatures.push('float32-filterable');
-  }
-  const device = await adapter.requestDevice({ requiredFeatures });
-  new CameraView(model, document.body, device);
-});
-
-})(BlackHoleShaderDemoApp.model,
-    BlackHoleShaderDemoApp.Bloom,
-    BlackHoleShaderDemoApp.TextureManager,
-    BlackHoleShaderDemoApp.ShaderManager,
-    BlackHoleShaderDemoApp.RocketManager);

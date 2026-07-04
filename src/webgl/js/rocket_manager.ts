@@ -1,28 +1,28 @@
-
-(function() {
+import { Model } from '../../common/model';
 
 const NEAR_PLANE = 0.1;
-const FAR_PLANE = 100;
+const FAR_PLANE = 100.0;
 
 const ENV_MAP_LEVELS = 7;
 const ENV_MAP_SIZE = 1 << (ENV_MAP_LEVELS - 1);
 
 const EXHAUST_RADIUS = 0.514;
-const EXHAUST_Z_MIN = -20;
+const EXHAUST_Z_MIN = -20.0;
 const EXHAUST_Z_MAX = -2.1;
 
-const createShader = function(gl, type, source) {
+const createShader = function(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
   const shader = gl.createShader(type);
+  if (!shader) throw new Error("Could not create WebGL shader");
   gl.shaderSource(shader, source);
   gl.compileShader(shader);
   return shader;
 };
 
-const loadRocketMesh = function(rocketDataUrl, callback) {
+const loadRocketMesh = function(rocketDataUrl: string, callback: (vertices: Float32Array, indices: Uint32Array) => void): void {
   const xhr = new XMLHttpRequest();
   xhr.open('GET', rocketDataUrl);
   xhr.responseType = 'arraybuffer';
-  xhr.onload = (event) => {
+  xhr.onload = () => {
     const data = new DataView(xhr.response);
     const numVertexFloats = data.getUint32(0, true);
     const numIndices = data.getUint32(Uint32Array.BYTES_PER_ELEMENT, true);
@@ -30,33 +30,33 @@ const loadRocketMesh = function(rocketDataUrl, callback) {
     let offset = 2 * Uint32Array.BYTES_PER_ELEMENT;
     const vertices = new Float32Array(numVertexFloats);
     for (let i = 0; i < numVertexFloats; ++i) {
-      vertices[i] =
-          data.getFloat32(i * Float32Array.BYTES_PER_ELEMENT + offset, true);
+      vertices[i] = data.getFloat32(i * Float32Array.BYTES_PER_ELEMENT + offset, true);
     }
  
     offset += numVertexFloats * Float32Array.BYTES_PER_ELEMENT;
     const indices = new Uint32Array(numIndices);
     for (let i = 0; i < numIndices; ++i) {
-      indices[i] =
-          data.getUint32(i * Uint32Array.BYTES_PER_ELEMENT + offset, true);
+      indices[i] = data.getUint32(i * Uint32Array.BYTES_PER_ELEMENT + offset, true);
     }
     callback(vertices, indices);
   };
   xhr.send();
 };
 
-const loadRocketTexture = function(gl, textureUrl) {
+const loadRocketTexture = function(gl: WebGL2RenderingContext, textureUrl: string): WebGLTexture {
   const glExt = gl.getExtension('EXT_texture_filter_anisotropic');
   const texture = gl.createTexture();
+  if (!texture) throw new Error("Could not create WebGL texture");
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, texture);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER,
-                   gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameterf(gl.TEXTURE_2D, glExt.TEXTURE_MAX_ANISOTROPY_EXT, 
-                   gl.getParameter(glExt.MAX_TEXTURE_MAX_ANISOTROPY_EXT));
+  if (glExt) {
+    gl.texParameterf(gl.TEXTURE_2D, glExt.TEXTURE_MAX_ANISOTROPY_EXT, 
+                     gl.getParameter(glExt.MAX_TEXTURE_MAX_ANISOTROPY_EXT));
+  }
   const image = new Image();
   image.addEventListener('load', function() {
     gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -65,105 +65,142 @@ const loadRocketTexture = function(gl, textureUrl) {
   });
   image.src = textureUrl;
   return texture;
+};
+
+interface WebGLRocketProgram extends WebGLProgram {
+  positionAttrib?: number;
+  normalAttrib?: number;
+  tangentAttrib?: number;
+  uvAttrib?: number;
+  ambientOcclusionAttrib?: number;
+  modelViewProjMatrix?: WebGLUniformLocation | null;
+  camera?: WebGLUniformLocation | null;
+  baseColorTexture?: WebGLUniformLocation | null;
+  occlusionRoughnessMetallicTexture?: WebGLUniformLocation | null;
+  normalMapTexture?: WebGLUniformLocation | null;
+  envMapTexture?: WebGLUniformLocation | null;
+  intensity?: WebGLUniformLocation | null;
+  kZ?: WebGLUniformLocation | null;
+  kR?: WebGLUniformLocation | null;
 }
 
-class RocketManager {
-  constructor(model, gl) {
+interface WebGLSizedBuffer extends WebGLBuffer {
+  size?: number;
+}
+
+export class RocketManager {
+  private model: Model;
+  private gl: WebGL2RenderingContext;
+
+  rocketProgram!: WebGLRocketProgram;
+  exhaustProgram!: WebGLRocketProgram;
+  envMapTexture!: WebGLTexture;
+  envMapFbo!: WebGLFramebuffer;
+
+  private rocketVertexBuffer: WebGLBuffer | null = null;
+  private rocketIndexBuffer: WebGLSizedBuffer | null = null;
+  private exhaustVertexBuffer: WebGLBuffer | null = null;
+  private exhaustIndexBuffer: WebGLSizedBuffer | null = null;
+
+  private baseColorTexture: WebGLTexture;
+  private occlusionRoughnessMetallicTexture: WebGLTexture;
+  private normalMapTexture: WebGLTexture;
+
+  constructor(model: Model, gl: WebGL2RenderingContext) {
     this.model = model;
     this.gl = gl;
-    this.rocketProgram = undefined;
-    this.exhaustProgram = undefined;
-    this.envMapTexture = undefined;
-    this.envMapFbo = undefined;
-    this.rocketVertexBuffer = undefined;
-    this.rocketIndexBuffer = undefined;
-    this.exhaustVertexBuffer = undefined;
-    this.exhaustIndexBuffer = undefined;
+
     this.baseColorTexture = loadRocketTexture(gl, 'rocket_base_color.png');
-    this.occlusionRoughnessMetallicTexture =
-        loadRocketTexture(gl, 'rocket_occlusion_roughness_metallic.png');
+    this.occlusionRoughnessMetallicTexture = loadRocketTexture(gl, 'rocket_occlusion_roughness_metallic.png');
     this.normalMapTexture = loadRocketTexture(gl, 'rocket_normal.png');
 
     this.createRocketProgram(gl);
     this.createExhaustProgram(gl);
     this.createEnvMap(gl);
-    loadRocketMesh('rocket.dat', 
-        (vertices, indices) => this.createRocketBuffers(vertices, indices));
+    loadRocketMesh('rocket.dat', (vertices, indices) => this.createRocketBuffers(vertices, indices));
     this.createExhaustBuffers(gl);
   }
 
-  createEnvMap(gl) {
-    this.envMapTexture = gl.createTexture();
+  private createEnvMap(gl: WebGL2RenderingContext): void {
+    const tex = gl.createTexture();
+    if (!tex) throw new Error("Could not create WebGL environment cube map");
+    this.envMapTexture = tex;
+
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_CUBE_MAP, this.envMapTexture);
-    gl.bindTexture(gl.TEXTURE_CUBE_MAP, this.envMapTexture);
-    gl.texStorage2D(gl.TEXTURE_CUBE_MAP, ENV_MAP_LEVELS, gl.RGBA16F,
-        ENV_MAP_SIZE, ENV_MAP_SIZE);
-    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER,
-                     gl.LINEAR_MIPMAP_LINEAR);
+    gl.texStorage2D(gl.TEXTURE_CUBE_MAP, ENV_MAP_LEVELS, gl.RGBA16F, ENV_MAP_SIZE, ENV_MAP_SIZE);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    
     const glExt = gl.getExtension('EXT_texture_filter_anisotropic');
-    gl.texParameterf(gl.TEXTURE_CUBE_MAP, glExt.TEXTURE_MAX_ANISOTROPY_EXT, 
-                     gl.getParameter(glExt.MAX_TEXTURE_MAX_ANISOTROPY_EXT));
+    if (glExt) {
+      gl.texParameterf(gl.TEXTURE_CUBE_MAP, glExt.TEXTURE_MAX_ANISOTROPY_EXT, 
+                       gl.getParameter(glExt.MAX_TEXTURE_MAX_ANISOTROPY_EXT));
+    }
 
-    this.envMapFbo = gl.createFramebuffer();
+    const fbo = gl.createFramebuffer();
+    if (!fbo) throw new Error("Could not create WebGL framebuffer");
+    this.envMapFbo = fbo;
+
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.envMapFbo);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0,   
-        gl.TEXTURE_CUBE_MAP_POSITIVE_X, this.envMapTexture, 0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_CUBE_MAP_POSITIVE_X, this.envMapTexture, 0);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
-  createRocketProgram(gl) {
+  private createRocketProgram(gl: WebGL2RenderingContext): void {
+    const vertexShaderEl = document.querySelector("#rocket_vertex_shader");
+    const fragmentShaderEl = document.querySelector("#rocket_fragment_shader");
+    if (!vertexShaderEl || !fragmentShaderEl) {
+      throw new Error("Missing rocket shader script elements");
+    }
+
     const vertexShader = createShader(
         gl, 
         gl.VERTEX_SHADER,
         `#version 300 es
         precision highp float;
-        ${document.querySelector("#rocket_vertex_shader").innerHTML}`);
+        ${vertexShaderEl.innerHTML}`);
     const fragmentShader = createShader(
         gl,
         gl.FRAGMENT_SHADER,
         `#version 300 es
         precision highp float;
         const float ENV_MAP_SIZE = float(${ENV_MAP_SIZE});
-        ${document.querySelector("#rocket_fragment_shader").innerHTML}`);
-    const program = gl.createProgram();
+        ${fragmentShaderEl.innerHTML}`);
+
+    const program = gl.createProgram() as WebGLRocketProgram;
+    if (!program) throw new Error("Could not create WebGL program");
     gl.attachShader(program, vertexShader);
     gl.attachShader(program, fragmentShader);
     gl.linkProgram(program);    
 
-    program.positionAttrib =
-        gl.getAttribLocation(program, 'position_attribute');
-    program.normalAttrib =
-        gl.getAttribLocation(program, 'normal_attribute');
-    program.tangentAttrib =
-        gl.getAttribLocation(program, 'tangent_attribute');
-    program.uvAttrib =
-        gl.getAttribLocation(program, 'uv_attribute');
-    program.ambientOcclusionAttrib =
-        gl.getAttribLocation(program, 'ambient_occlusion_attribute');
-    program.modelViewProjMatrix =
-        gl.getUniformLocation(program, 'model_view_proj_matrix');
-    program.camera = 
-        gl.getUniformLocation(program, 'camera');
-    program.baseColorTexture =
-        gl.getUniformLocation(program, 'base_color_texture');
-    program.occlusionRoughnessMetallicTexture =
-        gl.getUniformLocation(program, 'occlusion_roughness_metallic_texture');
-    program.normalMapTexture =
-        gl.getUniformLocation(program, 'normal_map_texture');
-    program.envMapTexture =
-        gl.getUniformLocation(program, 'env_map_texture');
+    program.positionAttrib = gl.getAttribLocation(program, 'position_attribute');
+    program.normalAttrib = gl.getAttribLocation(program, 'normal_attribute');
+    program.tangentAttrib = gl.getAttribLocation(program, 'tangent_attribute');
+    program.uvAttrib = gl.getAttribLocation(program, 'uv_attribute');
+    program.ambientOcclusionAttrib = gl.getAttribLocation(program, 'ambient_occlusion_attribute');
+    program.modelViewProjMatrix = gl.getUniformLocation(program, 'model_view_proj_matrix');
+    program.camera = gl.getUniformLocation(program, 'camera');
+    program.baseColorTexture = gl.getUniformLocation(program, 'base_color_texture');
+    program.occlusionRoughnessMetallicTexture = gl.getUniformLocation(program, 'occlusion_roughness_metallic_texture');
+    program.normalMapTexture = gl.getUniformLocation(program, 'normal_map_texture');
+    program.envMapTexture = gl.getUniformLocation(program, 'env_map_texture');
     this.rocketProgram = program;
   }
 
-  createExhaustProgram(gl) {
+  private createExhaustProgram(gl: WebGL2RenderingContext): void {
+    const vertexShaderEl = document.querySelector("#exhaust_vertex_shader");
+    const fragmentShaderEl = document.querySelector("#exhaust_fragment_shader");
+    if (!vertexShaderEl || !fragmentShaderEl) {
+      throw new Error("Missing exhaust shader script elements");
+    }
+
     const vertexShader = createShader(
         gl, 
         gl.VERTEX_SHADER,
         `#version 300 es
         precision highp float;
-        ${document.querySelector("#exhaust_vertex_shader").innerHTML}`);
+        ${vertexShaderEl.innerHTML}`);
     const fragmentShader = createShader(
         gl,
         gl.FRAGMENT_SHADER,
@@ -172,16 +209,16 @@ class RocketManager {
         const float RADIUS = float(${EXHAUST_RADIUS});
         const float Z_MIN = float(${EXHAUST_Z_MIN});
         const float Z_MAX = float(${EXHAUST_Z_MAX});
-        ${document.querySelector("#exhaust_fragment_shader").innerHTML}`);
-    const program = gl.createProgram();
+        ${fragmentShaderEl.innerHTML}`);
+
+    const program = gl.createProgram() as WebGLRocketProgram;
+    if (!program) throw new Error("Could not create WebGL program");
     gl.attachShader(program, vertexShader);
     gl.attachShader(program, fragmentShader);
     gl.linkProgram(program);    
 
-    program.positionAttrib =
-        gl.getAttribLocation(program, 'position_attribute');
-    program.modelViewProjMatrix =
-        gl.getUniformLocation(program, 'model_view_proj_matrix');
+    program.positionAttrib = gl.getAttribLocation(program, 'position_attribute');
+    program.modelViewProjMatrix = gl.getUniformLocation(program, 'model_view_proj_matrix');
     program.camera = gl.getUniformLocation(program, 'camera');
     program.intensity = gl.getUniformLocation(program, 'intensity');
     program.kZ = gl.getUniformLocation(program, 'k_z');
@@ -189,20 +226,21 @@ class RocketManager {
     this.exhaustProgram = program;
   }
 
-  createRocketBuffers(vertices, indices) {
+  private createRocketBuffers(vertices: Float32Array, indices: Uint32Array): void {
     const gl = this.gl;
 
     this.rocketVertexBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.rocketVertexBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
 
-    this.rocketIndexBuffer = gl.createBuffer();
+    this.rocketIndexBuffer = gl.createBuffer() as WebGLSizedBuffer;
+    if (!this.rocketIndexBuffer) throw new Error("Could not create index buffer");
     this.rocketIndexBuffer.size = indices.length;
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.rocketIndexBuffer);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);    
   }
 
-  createExhaustBuffers(gl) {
+  private createExhaustBuffers(gl: WebGL2RenderingContext): void {
     const NUM_CIRCUMFERENCE_SAMPLES = 32;
 
     const vertices = new Float32Array(6 * (NUM_CIRCUMFERENCE_SAMPLES + 1));
@@ -237,13 +275,14 @@ class RocketManager {
       indices[12 * i - 2] = 2 * i + 1;
       indices[12 * i - 1] = 2 * j + 1;
     }    
-    this.exhaustIndexBuffer = gl.createBuffer();
+    this.exhaustIndexBuffer = gl.createBuffer() as WebGLSizedBuffer;
+    if (!this.exhaustIndexBuffer) throw new Error("Could not create index buffer");
     this.exhaustIndexBuffer.size = indices.length;
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.exhaustIndexBuffer);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);    
   }
 
-  renderEnvMap(program, quadVertexBuffer) {
+  renderEnvMap(program: any, quadVertexBuffer: WebGLBuffer | null): void {
     const gl = this.gl;
     const model = this.model;
 
@@ -324,12 +363,11 @@ class RocketManager {
 
     gl.disableVertexAttribArray(program.vertexAttrib);
     gl.bindFramebuffer(gl.FRAMEBUFFER, currentFbo);
-    gl.viewport(currentViewport[0], currentViewport[1], currentViewport[2],
-        currentViewport[3]);
+    gl.viewport(currentViewport[0], currentViewport[1], currentViewport[2], currentViewport[3]);
   }
 
-  drawRocket() {
-    if (!this.rocketVertexBuffer) return;
+  drawRocket(): void {
+    if (!this.rocketVertexBuffer || !this.rocketIndexBuffer?.size) return;
 
     const gl = this.gl;
     gl.clear(gl.DEPTH_BUFFER_BIT);
@@ -348,45 +386,51 @@ class RocketManager {
 
     const program = this.rocketProgram;
     gl.useProgram(program);
-    gl.uniform1i(program.baseColorTexture, 0);
-    gl.uniform1i(program.occlusionRoughnessMetallicTexture, 1);
-    gl.uniform1i(program.normalMapTexture, 2);
-    gl.uniform1i(program.envMapTexture, 3);
+    if (program.baseColorTexture) gl.uniform1i(program.baseColorTexture, 0);
+    if (program.occlusionRoughnessMetallicTexture) gl.uniform1i(program.occlusionRoughnessMetallicTexture, 1);
+    if (program.normalMapTexture) gl.uniform1i(program.normalMapTexture, 2);
+    if (program.envMapTexture) gl.uniform1i(program.envMapTexture, 3);
     this.setCameraUniforms(program);
 
     gl.bindBuffer(gl.ARRAY_BUFFER, this.rocketVertexBuffer);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.rocketIndexBuffer);
     const stride = (3 + 3 + 4 + 1 + 2) * 4;
-    gl.vertexAttribPointer(
-        program.positionAttrib, 3, gl.FLOAT, false, stride, 0);
-    gl.vertexAttribPointer(
-        program.normalAttrib, 3, gl.FLOAT, false, stride, 3 * 4);
-    gl.vertexAttribPointer(
-        program.tangentAttrib, 4, gl.FLOAT, false, stride, 6 * 4);
-    gl.vertexAttribPointer(
-        program.uvAttrib, 2, gl.FLOAT, false, stride, 10 * 4);
-    gl.vertexAttribPointer(
-        program.ambientOcclusionAttrib, 1, gl.FLOAT, false, stride, 12 * 4);
-    gl.enableVertexAttribArray(program.positionAttrib);
-    gl.enableVertexAttribArray(program.normalAttrib);
-    gl.enableVertexAttribArray(program.tangentAttrib);
-    gl.enableVertexAttribArray(program.uvAttrib);
-    gl.enableVertexAttribArray(program.ambientOcclusionAttrib);
+    
+    if (program.positionAttrib !== undefined && program.positionAttrib >= 0) {
+      gl.vertexAttribPointer(program.positionAttrib, 3, gl.FLOAT, false, stride, 0);
+      gl.enableVertexAttribArray(program.positionAttrib);
+    }
+    if (program.normalAttrib !== undefined && program.normalAttrib >= 0) {
+      gl.vertexAttribPointer(program.normalAttrib, 3, gl.FLOAT, false, stride, 3 * 4);
+      gl.enableVertexAttribArray(program.normalAttrib);
+    }
+    if (program.tangentAttrib !== undefined && program.tangentAttrib >= 0) {
+      gl.vertexAttribPointer(program.tangentAttrib, 4, gl.FLOAT, false, stride, 6 * 4);
+      gl.enableVertexAttribArray(program.tangentAttrib);
+    }
+    if (program.uvAttrib !== undefined && program.uvAttrib >= 0) {
+      gl.vertexAttribPointer(program.uvAttrib, 2, gl.FLOAT, false, stride, 10 * 4);
+      gl.enableVertexAttribArray(program.uvAttrib);
+    }
+    if (program.ambientOcclusionAttrib !== undefined && program.ambientOcclusionAttrib >= 0) {
+      gl.vertexAttribPointer(program.ambientOcclusionAttrib, 1, gl.FLOAT, false, stride, 12 * 4);
+      gl.enableVertexAttribArray(program.ambientOcclusionAttrib);
+    }
 
-    gl.drawElements(
-        gl.TRIANGLES, this.rocketIndexBuffer.size, gl.UNSIGNED_INT, 0);
+    gl.drawElements(gl.TRIANGLES, this.rocketIndexBuffer.size, gl.UNSIGNED_INT, 0);
 
-    gl.disableVertexAttribArray(program.positionAttrib);
-    gl.disableVertexAttribArray(program.normalAttrib);
-    gl.disableVertexAttribArray(program.tangentAttrib);
-    gl.disableVertexAttribArray(program.uvAttrib);
-    gl.disableVertexAttribArray(program.ambientOcclusionAttrib);
+    if (program.positionAttrib !== undefined && program.positionAttrib >= 0) gl.disableVertexAttribArray(program.positionAttrib);
+    if (program.normalAttrib !== undefined && program.normalAttrib >= 0) gl.disableVertexAttribArray(program.normalAttrib);
+    if (program.tangentAttrib !== undefined && program.tangentAttrib >= 0) gl.disableVertexAttribArray(program.tangentAttrib);
+    if (program.uvAttrib !== undefined && program.uvAttrib >= 0) gl.disableVertexAttribArray(program.uvAttrib);
+    if (program.ambientOcclusionAttrib !== undefined && program.ambientOcclusionAttrib >= 0) gl.disableVertexAttribArray(program.ambientOcclusionAttrib);
+    
     gl.disable(gl.DEPTH_TEST);
     gl.disable(gl.CULL_FACE);
   }
 
-  drawExhaust(time, gForce) {
-    if (!this.rocketVertexBuffer) return;
+  drawExhaust(time: number, gForce: number): void {
+    if (!this.rocketVertexBuffer || !this.exhaustIndexBuffer?.size) return;
 
     const gl = this.gl;
     gl.enable(gl.DEPTH_TEST);
@@ -399,45 +443,48 @@ class RocketManager {
     gl.useProgram(program);
 
     const intensity = 0.1 * Math.pow(gForce, 0.75);
-    gl.uniform3f(program.intensity, 
-        46 / 255 * intensity, 176 / 255 * intensity, intensity);
+    if (program.intensity) {
+      gl.uniform3f(program.intensity, 
+          46 / 255 * intensity, 176 / 255 * intensity, intensity);
+    }
 
     time *= 100;
     const kR1 = 6.75 + 0.5 * Math.cos(time);
     const kR2 = 5.75 + 0.5 * Math.cos((time + 1) / Math.sqrt(2));
     const kR3 = 4.75 + 0.5 * Math.cos((time + 2) / Math.sqrt(3));
     const R2 = EXHAUST_RADIUS * EXHAUST_RADIUS;
-    gl.uniform3f(program.kR, kR1 / R2, kR2 / R2, kR3 / R2);
+    if (program.kR) gl.uniform3f(program.kR, kR1 / R2, kR2 / R2, kR3 / R2);
 
     const kZ1 = 27 + 2 * Math.cos((time + 1) / Math.sqrt(2));
     const kZ2 = 23 + 2 * Math.cos((time + 2) / Math.sqrt(3));
     const kZ3 = 19 + 2 * Math.cos(time);
     const DZ = EXHAUST_Z_MAX - EXHAUST_Z_MIN;
-    gl.uniform3f(program.kZ, kZ1 / DZ, kZ2 / DZ, kZ3 / DZ);
+    if (program.kZ) gl.uniform3f(program.kZ, kZ1 / DZ, kZ2 / DZ, kZ3 / DZ);
     this.setCameraUniforms(program);
 
     gl.bindBuffer(gl.ARRAY_BUFFER, this.exhaustVertexBuffer);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.exhaustIndexBuffer);
-    gl.vertexAttribPointer(
-        program.positionAttrib, 3, gl.FLOAT, false, 0, 0);
-    gl.enableVertexAttribArray(program.positionAttrib);
+    if (program.positionAttrib !== undefined && program.positionAttrib >= 0) {
+      gl.vertexAttribPointer(program.positionAttrib, 3, gl.FLOAT, false, 0, 0);
+      gl.enableVertexAttribArray(program.positionAttrib);
+    }
 
     gl.cullFace(gl.BACK);
-    gl.drawElements(
-        gl.TRIANGLES, this.exhaustIndexBuffer.size, gl.UNSIGNED_INT, 0);
+    gl.drawElements(gl.TRIANGLES, this.exhaustIndexBuffer.size, gl.UNSIGNED_INT, 0);
 
     gl.cullFace(gl.FRONT);
-    gl.drawElements(
-        gl.TRIANGLES, this.exhaustIndexBuffer.size, gl.UNSIGNED_INT, 0);
+    gl.drawElements(gl.TRIANGLES, this.exhaustIndexBuffer.size, gl.UNSIGNED_INT, 0);
 
-    gl.disableVertexAttribArray(program.positionAttrib);
+    if (program.positionAttrib !== undefined && program.positionAttrib >= 0) {
+      gl.disableVertexAttribArray(program.positionAttrib);
+    }
     gl.disable(gl.DEPTH_TEST);
     gl.disable(gl.BLEND);
     gl.disable(gl.CULL_FACE);
     gl.cullFace(gl.BACK);
   }
 
-  setCameraUniforms(program) {
+  private setCameraUniforms(program: WebGLRocketProgram): void {
     const yaw = this.model.cameraYaw.getValue() + this.model.cameraYawOffset -
         this.model.rocketYaw;
     const cameraDist = this.model.rocketDistance.getValue() / 2;
@@ -466,18 +513,18 @@ class RocketManager {
       [    0, 0, -1, 0]
     ];
 
-    const modelViewProjMatrix = 
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    const modelViewProjMatrix = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     for (let i = 0; i < 4; ++i) {
       for (let j = 0; j < 4; ++j) {
         for (let k = 0; k < 4; ++k) {
-          modelViewProjMatrix[i + 4 * j] +=
-              projMatrix[i][k] * modelViewMatrix[k][j];
+          modelViewProjMatrix[i + 4 * j] += projMatrix[i][k] * modelViewMatrix[k][j];
         }
       }
     }
-    this.gl.uniformMatrix4fv(program.modelViewProjMatrix, false,
-        modelViewProjMatrix);
+    
+    if (program.modelViewProjMatrix) {
+      this.gl.uniformMatrix4fv(program.modelViewProjMatrix, false, modelViewProjMatrix);
+    }
 
     const camera = [0, 0, 0, 1];
     for (let i = 0; i < 3; ++i) {
@@ -485,9 +532,8 @@ class RocketManager {
         camera[i] -= modelViewMatrix[j][i] * modelViewMatrix[j][3];
       }
     }
-    this.gl.uniform3f(program.camera, camera[0], camera[1], camera[2]);
+    if (program.camera) {
+      this.gl.uniform3f(program.camera, camera[0], camera[1], camera[2]);
+    }
   }
 }
-
-BlackHoleShaderDemoApp.RocketManager = RocketManager;
-})();

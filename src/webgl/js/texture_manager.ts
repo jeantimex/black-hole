@@ -1,27 +1,19 @@
-
-(function() {
-
-
-
-
-// Max LOD for which the manul texture filtering method DefaultStarColor() in
-// model.glsl must be used for stars. Above this level a default anisotropic
-// texture filtering is used instead. Must be consistent with the same constant
-// in shader_manager.js.
 const MAX_STAR_TEXTURE_LOD = 6;
 
-const cubeMapTargets = function(gl) {
+const cubeMapTargets = function(gl: WebGL2RenderingContext): number[] {
   return [
-      gl.TEXTURE_CUBE_MAP_POSITIVE_X,
-      gl.TEXTURE_CUBE_MAP_NEGATIVE_X,
-      gl.TEXTURE_CUBE_MAP_POSITIVE_Y,
-      gl.TEXTURE_CUBE_MAP_NEGATIVE_Y,
-      gl.TEXTURE_CUBE_MAP_POSITIVE_Z,
-      gl.TEXTURE_CUBE_MAP_NEGATIVE_Z];
+    gl.TEXTURE_CUBE_MAP_POSITIVE_X,
+    gl.TEXTURE_CUBE_MAP_NEGATIVE_X,
+    gl.TEXTURE_CUBE_MAP_POSITIVE_Y,
+    gl.TEXTURE_CUBE_MAP_NEGATIVE_Y,
+    gl.TEXTURE_CUBE_MAP_POSITIVE_Z,
+    gl.TEXTURE_CUBE_MAP_NEGATIVE_Z
+  ];
 };
 
-const createTexture = function(gl, target) {
+const createTexture = function(gl: WebGL2RenderingContext, target: number): WebGLTexture {
   const texture = gl.createTexture();
+  if (!texture) throw new Error("Could not create WebGL texture");
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(target, texture);
   gl.texParameteri(target, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
@@ -31,14 +23,13 @@ const createTexture = function(gl, target) {
   return texture;
 };
 
-const loadTextureData = function(textureDataUrl, callback) {
+const loadTextureData = function(textureDataUrl: string, callback: (data: Float32Array) => void): void {
   const xhr = new XMLHttpRequest();
   xhr.open('GET', textureDataUrl);
   xhr.responseType = 'arraybuffer';
-  xhr.onload = (event) => {
+  xhr.onload = () => {
     const data = new DataView(xhr.response);
-    const array =
-        new Float32Array(data.byteLength / Float32Array.BYTES_PER_ELEMENT);
+    const array = new Float32Array(data.byteLength / Float32Array.BYTES_PER_ELEMENT);
     for (let i = 0; i < array.length; ++i) {
       array[i] = data.getFloat32(i * Float32Array.BYTES_PER_ELEMENT, true);
     }
@@ -47,14 +38,13 @@ const loadTextureData = function(textureDataUrl, callback) {
   xhr.send();
 };
 
-const loadIntTextureData = function(textureDataUrl, callback) {
+const loadIntTextureData = function(textureDataUrl: string, callback: (data: Uint32Array) => void): void {
   const xhr = new XMLHttpRequest();
   xhr.open('GET', textureDataUrl);
   xhr.responseType = 'arraybuffer';
-  xhr.onload = (event) => {
+  xhr.onload = () => {
     const data = new DataView(xhr.response);
-    const array =
-        new Uint32Array(data.byteLength / Uint32Array.BYTES_PER_ELEMENT);
+    const array = new Uint32Array(data.byteLength / Uint32Array.BYTES_PER_ELEMENT);
     for (let i = 0; i < array.length; ++i) {
       array[i] = data.getUint32(i * Uint32Array.BYTES_PER_ELEMENT, true);
     }
@@ -63,14 +53,14 @@ const loadIntTextureData = function(textureDataUrl, callback) {
   xhr.send();
 };
 
-const loadNoiseTexture = function(gl, glExt, textureUrl) {
+const loadNoiseTexture = function(gl: WebGL2RenderingContext, glExt: any, textureUrl: string): WebGLTexture {
   const texture = gl.createTexture();
+  if (!texture) throw new Error("Could not create noise texture");
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, texture);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER,
-                   gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameterf(gl.TEXTURE_2D, glExt.TEXTURE_MAX_ANISOTROPY_EXT, 
                    gl.getParameter(glExt.MAX_TEXTURE_MAX_ANISOTROPY_EXT));
@@ -82,28 +72,51 @@ const loadNoiseTexture = function(gl, glExt, textureUrl) {
   });
   image.src = textureUrl;
   return texture;
+};
+
+interface SizedWebGLTexture extends WebGLTexture {
+  width?: number;
+  height?: number;
 }
 
+interface StarTile {
+  l: number;
+  ti: number;
+  tj: number;
+  i: number;
+  target: number;
+  url: string;
+}
 
-class TextureManager {
-  constructor(rootElement, gl) {
-    this.loadingPanel = rootElement.querySelector('#cv_loading_panel');
-    this.loadingBar = rootElement.querySelector('#cv_loading_bar');
+export class TextureManager {
+  private loadingPanel: HTMLElement;
+  private loadingBar: HTMLElement;
+  private gl: WebGL2RenderingContext;
+
+  rayDeflectionTexture: SizedWebGLTexture | null = null;
+  rayInverseRadiusTexture: SizedWebGLTexture | null = null;
+  blackbodyTexture: WebGLTexture | null = null;
+  dopplerTexture: WebGLTexture | null = null;
+  gridTexture: WebGLTexture | null = null;
+  galaxyTexture: WebGLTexture | null = null;
+  starTexture: WebGLTexture | null = null;
+  starTexture2: WebGLTexture | null = null;
+  noiseTexture: WebGLTexture | null = null;
+
+  private tilesQueue: StarTile[] = [];
+  private numTilesLoaded = 0;
+  private numTilesLoadedPerLevel = [0, 0, 0, 0, 0];
+  private numPendingRequests = 0;
+
+  constructor(rootElement: HTMLElement, gl: WebGL2RenderingContext) {
+    const panel = rootElement.querySelector('#cv_loading_panel');
+    const bar = rootElement.querySelector('#cv_loading_bar');
+    if (!panel) throw new Error("cv_loading_panel not found");
+    if (!bar) throw new Error("cv_loading_bar not found");
+
+    this.loadingPanel = panel as HTMLElement;
+    this.loadingBar = bar as HTMLElement;
     this.gl = gl;
-
-    this.rayDeflectionTexture = null;
-    this.rayInverseRadiusTexture = null;
-    this.blackbodyTexture = null;
-    this.dopplerTexture = null;
-    this.gridTexture = null;
-
-    this.galaxyTexture = null;
-    this.starTexture = null;
-    this.starTexture2 = null;
-    this.tilesQueue = [];
-    this.numTilesLoaded = 0;
-    this.numTilesLoadedPerLevel = [0, 0, 0, 0, 0];
-    this.numPendingRequests = 0;
 
     const ext = gl.getExtension('EXT_texture_filter_anisotropic');
     this.loadTextures(ext);
@@ -113,7 +126,7 @@ class TextureManager {
     document.body.addEventListener('keypress', (e) => this.onKeyPress(e)); 
   }
 
-  loadTextures(ext) {
+  private loadTextures(ext: any): void {
     const gl = this.gl;
 
     loadTextureData('deflection.dat', (data) => {
@@ -155,8 +168,7 @@ class TextureManager {
 
     this.gridTexture = createTexture(gl, gl.TEXTURE_CUBE_MAP);
     gl.texStorage2D(gl.TEXTURE_CUBE_MAP, 10, gl.R8, 512, 512);
-    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, 
-                     gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR);   
     gl.texParameterf(gl.TEXTURE_CUBE_MAP, ext.TEXTURE_MAX_ANISOTROPY_EXT, 
                      gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT));
@@ -175,37 +187,31 @@ class TextureManager {
     gl.generateMipmap(gl.TEXTURE_CUBE_MAP);
   }
 
-  loadStarTextures(glExt) {
+  private loadStarTextures(glExt: any): void {
     const gl = this.gl;
 
     this.galaxyTexture = createTexture(gl, gl.TEXTURE_CUBE_MAP);
     gl.bindTexture(gl.TEXTURE_CUBE_MAP, this.galaxyTexture);
     gl.texStorage2D(gl.TEXTURE_CUBE_MAP, 12, gl.RGB9_E5, 2048, 2048);
-    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER,
-                     gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR);   
     gl.texParameterf(gl.TEXTURE_CUBE_MAP, glExt.TEXTURE_MAX_ANISOTROPY_EXT, 
                      gl.getParameter(glExt.MAX_TEXTURE_MAX_ANISOTROPY_EXT));
 
     this.starTexture = createTexture(gl, gl.TEXTURE_CUBE_MAP);
     gl.bindTexture(gl.TEXTURE_CUBE_MAP, this.starTexture);
-    gl.texStorage2D(gl.TEXTURE_CUBE_MAP, MAX_STAR_TEXTURE_LOD + 1, gl.RGB9_E5, 
-                    2048, 2048);
-    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, 
-                     gl.NEAREST_MIPMAP_NEAREST);
+    gl.texStorage2D(gl.TEXTURE_CUBE_MAP, MAX_STAR_TEXTURE_LOD + 1, gl.RGB9_E5, 2048, 2048);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.NEAREST_MIPMAP_NEAREST);
     gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAX_LOD, 
-                     MAX_STAR_TEXTURE_LOD);
-    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAX_LEVEL, 
-                     MAX_STAR_TEXTURE_LOD);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAX_LOD, MAX_STAR_TEXTURE_LOD);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAX_LEVEL, MAX_STAR_TEXTURE_LOD);
 
     this.starTexture2 = createTexture(gl, gl.TEXTURE_CUBE_MAP);
     gl.bindTexture(gl.TEXTURE_CUBE_MAP, this.starTexture2);
     gl.texStorage2D(gl.TEXTURE_CUBE_MAP, 11 - MAX_STAR_TEXTURE_LOD, gl.RGB9_E5, 
                     2048 / (1 << (MAX_STAR_TEXTURE_LOD + 1)),
                     2048 / (1 << (MAX_STAR_TEXTURE_LOD + 1)));
-    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, 
-                     gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameterf(gl.TEXTURE_CUBE_MAP, glExt.TEXTURE_MAX_ANISOTROPY_EXT, 
                      gl.getParameter(glExt.MAX_TEXTURE_MAX_ANISOTROPY_EXT));
@@ -231,15 +237,16 @@ class TextureManager {
     this.loadStarTextureTiles();
   }
 
-  loadStarTextureTiles() {
+  private loadStarTextureTiles(): void {
     while (this.tilesQueue.length > 0 && this.numPendingRequests < 6) {
       const tile = this.tilesQueue.pop();
-      this.loadStarTextureTile(
-          tile.l, tile.ti, tile.tj, tile.i, tile.target, tile.url);
+      if (tile) {
+        this.loadStarTextureTile(tile.l, tile.ti, tile.tj, tile.i, tile.target, tile.url);
+      }
     }
   }
 
-  loadStarTextureTile(l, ti, tj, i, target, url) {
+  private loadStarTextureTile(l: number, ti: number, tj: number, _i: number, target: number, url: string): void {
     const gl = this.gl;
     const size = 2048 / (1 << l);
     loadIntTextureData(url, (data) => {
@@ -280,14 +287,14 @@ class TextureManager {
     this.numPendingRequests += 1;
   }
 
-  updateLoadingBar() {
+  private updateLoadingBar(): void {
     this.loadingBar.style.width = `${this.numTilesLoaded / 516 * 100}%`;
     if (this.numTilesLoaded == 516) {
-      this.loadingPanel.classList.toggle('cv-loaded');
+      this.loadingPanel.classList.toggle('cv-loaded', true);
     }
   } 
 
-  getMinLoadedStarTextureLod() {
+  getMinLoadedStarTextureLod(): number {
     if (this.numTilesLoadedPerLevel[0] == 384) {
       return 0;
     } else if (this.numTilesLoadedPerLevel[1] == 96) {
@@ -300,12 +307,9 @@ class TextureManager {
     return 4;
   }
 
-  onKeyPress(event) {
+  onKeyPress(event: KeyboardEvent): void {
     if (event.key == ' ') {
       this.loadingPanel.classList.toggle('cv-hidden');
     }
   }
 }
-
-BlackHoleShaderDemoApp.TextureManager = TextureManager;
-})();

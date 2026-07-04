@@ -30,21 +30,42 @@ injectShader('vertex_shader', 'x-shader/x-vertex', vertexShader);
 injectShader('fragment_shader', 'x-shader/x-fragment', fragmentShader);
 injectShader('black_hole_shader', 'x-shader/x-fragment', blackHoleShader);
 
-// Initialize namespace
-(window as any).BlackHoleShaderDemoApp = (window as any).BlackHoleShaderDemoApp || {};
+// Import standard modules
+import { Model } from '../common/model';
+import { UrlParams } from '../common/url_params';
+import { SettingsPanel } from '../common/settings_panel';
+import { OrbitPanel } from '../common/orbit_panel';
+import { CameraView } from './js/camera_view';
 
-// Import JS scripts sequentially
-import './js/model.js';
-import './js/url_params.js';
-import './js/bloom.js';
-import './js/rocket_manager.js';
-import './js/texture_manager.js';
-import './js/shader_manager.js';
-import './js/camera_view.js';
-import './js/orbit_panel.js';
-import './js/settings_panel.js';
+window.addEventListener('DOMContentLoaded', () => {
+  const model = new Model();
+  new UrlParams(model);
 
-// Trigger DOMContentLoaded manually if it already fired
-if (document.readyState !== 'loading') {
-  window.dispatchEvent(new Event('DOMContentLoaded'));
-}
+  const settingsPanelEl = document.body.querySelector('#settings_panel');
+  if (settingsPanelEl) {
+    new SettingsPanel(settingsPanelEl as HTMLElement, model);
+  }
+
+  const orbitPanelEl = document.body.querySelector('#orbit_panel');
+  if (orbitPanelEl) {
+    new OrbitPanel(orbitPanelEl as HTMLElement, model);
+  }
+
+  window.addEventListener('error', (event) => {
+    const errorPanel = document.querySelector('#cv_error_panel');
+    if (errorPanel) {
+      errorPanel.innerHTML = 'JS Error: ' + event.message;
+      errorPanel.classList.toggle('cv-hidden', false);
+    }
+  });
+
+  window.addEventListener('unhandledrejection', (event) => {
+    const errorPanel = document.querySelector('#cv_error_panel');
+    if (errorPanel) {
+      errorPanel.innerHTML = 'Promise Error: ' + event.reason;
+      errorPanel.classList.toggle('cv-hidden', false);
+    }
+  });
+
+  new CameraView(model, document.body);
+});

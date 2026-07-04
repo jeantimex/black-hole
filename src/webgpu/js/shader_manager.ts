@@ -1,14 +1,18 @@
-(function() {
+import { Model } from '../../common/model';
+import { TextureManager } from './texture_manager';
 
-class ShaderManager {
-  constructor(model, textureManager, device) {
-    this.model = model;
+export class ShaderManager {
+  private textureManager: TextureManager;
+  private device: GPUDevice;
+  private shaderModule: GPUShaderModule | null = null;
+
+  constructor(_model: Model, textureManager: TextureManager, device: GPUDevice) {
     this.textureManager = textureManager;
     this.device = device;
     this.shaderModule = null;
   }
 
-  getProgram() {
+  getProgram(): GPUShaderModule | null {
     // If the lookup textures are not loaded yet, we wait.
     if (!this.textureManager.rayDeflectionTexture ||
         !this.textureManager.rayInverseRadiusTexture) {
@@ -21,7 +25,7 @@ class ShaderManager {
         console.error("ShaderManager: #black_hole_shader element not found in DOM!");
         return null;
       }
-      const source = shaderElement.textContent;
+      const source = shaderElement.textContent || "";
       this.shaderModule = this.device.createShaderModule({
         label: 'BlackHoleShader',
         code: source
@@ -45,6 +49,3 @@ class ShaderManager {
     return this.shaderModule;
   }
 }
-
-BlackHoleShaderDemoApp.ShaderManager = ShaderManager;
-})();

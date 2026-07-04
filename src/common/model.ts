@@ -1,8 +1,3 @@
-
-window.BlackHoleShaderDemoApp = window.BlackHoleShaderDemoApp || {};
-var BlackHoleShaderDemoApp = window.BlackHoleShaderDemoApp;
-(function() {
-
 // The speed of light.
 const C = 299792458;
 
@@ -12,36 +7,68 @@ const G = 6.6743e-11;
 // The mass of the Sun.
 const SOLAR_MASS = 1.98847e30;
 
-class BooleanValue {
-  constructor(model, defaultValue) {
+export type StateType = 'STOPPED' | 'PLAYING' | 'PAUSED';
+
+export const State = {
+  STOPPED: 'STOPPED' as StateType,
+  PLAYING: 'PLAYING' as StateType,
+  PAUSED: 'PAUSED' as StateType
+};
+
+export const Target = {
+  DEFAULT: 0,
+  BLACK_HOLE: 1,
+  LEFT: 2,
+  FORWARD: 3,
+  RIGHT: 4
+};
+
+export interface ValueListener {
+  onSettingsChange(): void;
+  onOrbitChange(): void;
+}
+
+export class BooleanValue {
+  private model: Model;
+  private value: boolean;
+  private defaultValue: boolean;
+
+  constructor(model: Model, defaultValue: boolean) {
     this.model = model;
     this.value = defaultValue;
     this.defaultValue = defaultValue;
   }
-  getDefaultValue() { return this.defaultValue; }
-  getValue() { return this.value; }
-  setValue(value) {
+
+  getDefaultValue(): boolean { return this.defaultValue; }
+  getValue(): boolean { return this.value; }
+  setValue(value: boolean): void {
     this.value = !!value;
     this.model.notifyListeners();
   }
 }
 
-class QuantizedValue {
-  constructor(model, f, defaultIndex, size = 1000) {
+export class QuantizedValue {
+  private model: Model;
+  private values: number[];
+  private index: number;
+  private defaultIndex: number;
+
+  constructor(model: Model, f: (x: number) => number, defaultIndex: number, size = 1000) {
     this.model = model;
-    this.values = Array.from({length: size + 1}, (value, i) => f(i / size));
+    this.values = Array.from({length: size + 1}, (_, i) => f(i / size));
     this.index = defaultIndex;
     this.defaultIndex = defaultIndex;
   }
-  getSize() { return this.values.length; }
-  getDefaultIndex() { return this.defaultIndex; }
-  getIndex() { return this.index; }
-  getValue() { return this.values[this.index]; }
-  setIndex(index) { 
+
+  getSize(): number { return this.values.length; }
+  getDefaultIndex(): number { return this.defaultIndex; }
+  getIndex(): number { return this.index; }
+  getValue(): number { return this.values[this.index]; }
+  setIndex(index: number): void { 
     this.index = Math.max(0, Math.min(index, this.values.length - 1)); 
     this.model.notifyListeners();
   }
-  setValue(value) {
+  setValue(value: number): void {
     let i0 = 0;
     let i1 = this.values.length - 1;
     if (value <= this.values[i0]) {
@@ -63,25 +90,11 @@ class QuantizedValue {
   }
 }
 
-const State = {
-  STOPPED: 'STOPPED',
-  PLAYING: 'PLAYING',
-  PAUSED: 'PAUSED'
-};
-
-const Target = {
-  DEFAULT: 0,
-  BLACK_HOLE: 1,
-  LEFT: 2,
-  FORWARD: 3,
-  RIGHT: 4
-};
-
-const safeSqrt = function(x) {
+const safeSqrt = function(x: number): number {
   return Math.sqrt(Math.max(x, 0));
 };
 
-const matrixProduct = function(a, b) {
+const matrixProduct = function(a: number[][], b: number[][]): number[][] {
   const c = [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]];
   for (let i = 0; i < 4; ++i) {
     for (let j = 0; j < 4; ++j) {
@@ -93,7 +106,7 @@ const matrixProduct = function(a, b) {
   return c;
 };
 
-const vectorMatrixProduct = function(v, m) {
+const vectorMatrixProduct = function(v: number[], m: number[][]): number[] {
   const c = [0, 0, 0, 0];
   for (let i = 0; i < 4; ++i) {
     for (let j = 0; j < 4; ++j) {
@@ -103,122 +116,103 @@ const vectorMatrixProduct = function(v, m) {
   return c;
 };
 
-class Model {
+export class Model {
+  cameraTarget: QuantizedValue;
+  cameraYaw: QuantizedValue;
+  cameraPitch: QuantizedValue;
+  exposure: QuantizedValue;
+  bloom: QuantizedValue;
+  highDefinition: BooleanValue;
+  highContrast: BooleanValue;
+  startRadius: QuantizedValue;
+  startDirection: QuantizedValue;
+  startSpeed: QuantizedValue;
+  orbitInclination: QuantizedValue;
+  lensing: BooleanValue;
+  doppler: BooleanValue;
+  grid: BooleanValue;
+  blackHoleMass: QuantizedValue;
+  discDensity: QuantizedValue;
+  discOpacity: QuantizedValue;
+  discTemperature: QuantizedValue;
+  rocketDistance: QuantizedValue;
+  rocket: BooleanValue;
+  starsYaw: QuantizedValue;
+  starsPitch: QuantizedValue;
+  starsRoll: QuantizedValue;
+  stars: BooleanValue;
+
+  starsMatrix: number[] = [];
+  state: StateType = 'STOPPED';
+  e: number = 0;
+  l: number = 0;
+  t: number = 0;
+  r: number = 0;
+  drOverDtau: number = 0;
+  worldTheta: number = 0;
+  worldPhi: number = 0;
+  phi: number = 0;
+  lorentz: number[][] = [];
+  p: number[] = [];
+  kS: number[] = [];
+  fovY: number = 50 / 180 * Math.PI;
+  cameraYawOffset: number = 0;
+
+  eTau: number[] = [];
+  eW: number[] = [];
+  eH: number[] = [];
+  eD: number[] = [];
+
+  rocketYaw: number = 0;
+  rocketLorentz: number[][] = [];
+  rocketTau: number[] = [];
+  rocketW: number[] = [];
+  rocketH: number[] = [];
+  rocketD: number[] = [];
+
+  blackHoleRadiusMeters: number = 0;
+  speedMetersPerSecond: number = 0;
+  gForce: number = 0;
+  localElapsedTimeSeconds: number = 0;
+  globalElapsedTimeSeconds: number = 0;
+  timeDilationFactor: number = 1;
+
+  private listeners: ValueListener[] = [];
+
   constructor() {
-    this.cameraTarget = 
-        new QuantizedValue(this, (x) => 4 * x, 0, 4);
-    this.cameraYaw = 
-        new QuantizedValue(this, (x) => 2 * Math.PI * x, 0, 36000);
-    this.cameraPitch =
-        new QuantizedValue(this, (x) => Math.PI * (x - 0.5), 9000, 18000);
-    this.exposure = 
-        new QuantizedValue(this, (x) => Math.pow(10, 3 * x - 3), 500);
-    this.bloom = 
-        new QuantizedValue(this, (x) => x, 500);
-    this.highDefinition =
-        new BooleanValue(this, false);
-    this.highContrast =
-        new BooleanValue(this, false);
-    this.startRadius = 
-        new QuantizedValue(this, (x) => Math.max(1 + 39 * x * x, 1.01), 940);
-    this.startDirection = 
-        new QuantizedValue(this, (x) => Math.PI * (x - 0.5), 1800, 1800);
-    this.startSpeed = 
-        new QuantizedValue(this, (x) => Math.min(x * x, 0.99), 347);
-    this.orbitInclination = 
-        new QuantizedValue(this, (x) => Math.PI * (x - 0.5), 970, 1799);
-    this.lensing =
-        new BooleanValue(this, true);
-    this.doppler =
-        new BooleanValue(this, true);
-    this.grid =
-        new BooleanValue(this, false);
-    this.blackHoleMass = 
-        new QuantizedValue(this, (x) => 10 * Math.pow(10, 6 * x), 384);
-    this.discDensity = 
-        new QuantizedValue(this, (x) => 100 * Math.pow(x, 10), 500);
-    this.discOpacity =
-        new QuantizedValue(this, (x) => x, 300);
-    this.discTemperature = 
-        new QuantizedValue(this, (x) => 1000 * Math.pow(10, x), 430);
-    this.rocketDistance =
-        new QuantizedValue(this, (x) => 30 + 50 * x, 500);
-    this.rocket =
-        new BooleanValue(this, false);
-    this.starsYaw = 
-        new QuantizedValue(this, (x) => 2 * Math.PI * (x - 0.5), 1800, 3600);
-    this.starsPitch = 
-        new QuantizedValue(this, (x) => Math.PI * (x - 0.5), 900, 1800);
-    this.starsRoll = 
-        new QuantizedValue(this, (x) => 2 * Math.PI * (x - 0.5), 1800, 3600);
-    this.stars =
-        new BooleanValue(this, true);
-    this.starsMatrix = undefined;
-
-    // The current state of the camera (i.e. the observer) motion.
-    this.state = State.STOPPED;
-    // The constant of motion dt / dTau = e / (1 - u) of the camera.
-    this.e = undefined;
-    // The constant of motion dphi / dTau = l u^2 of the camera.
-    this.l = undefined;
-    // The current value of the Schwarzschild's t coordinate of the camera.
-    this.t = 0;
-    // The current value of the Schwarzschild's r coordinate of the camera.
-    this.r = undefined;
-    // The current value of the derivative of r with respect to proper time.
-    this.drOverDtau = undefined;
-    // The current value of the Schwarzschild's theta coordinate of the camera.
-    this.worldTheta = undefined;
-    // The current value of the Schwarzschild's phi coordinate of the camera.
-    this.worldPhi = undefined;
-    // The current value of the Schwarzschild's phi coordinate of the camera (in
-    // rotated coordinates such that its orbit is in the equatorial plane).
-    this.phi = undefined;
-    // The Lorentz transformation matrix specifying the current camera 
-    // orientation and velocity.
-    this.lorentz = undefined;
-    // The camera position, in (pseudo-)Cartesian coordinates.
-    this.p = undefined;
-    // The camera 4-velocity, in Schwarzschild coordinates.
-    this.kS = undefined;
-    // The camera's vertical field of view.
-    this.fovY = 50 / 180 * Math.PI;
-    // The yaw offset added to the user controlled camera yaw.
-    this.cameraYawOffset = 0;
-    // The base vectors of the camera reference frame, in (pseudo-)Cartesian
-    // coordinates.
-    this.eTau = undefined;
-    this.eW = undefined;
-    this.eH = undefined;
-    this.eD = undefined;
-
-    // The orientation of the rocket (tangent to the orbit).
-    this.rocketYaw = 0;
-    // The Lorentz transformation matrix specifying the current rocket
-    // orientation and velocity.
-    this.rocketLorentz = undefined;
-    // The base vectors of the rocket reference frame, in (pseudo-)Cartesian
-    // coordinates.
-    this.rocketTau = undefined;
-    this.rocketW = undefined;
-    this.rocketH = undefined;
-    this.rocketD = undefined;
-
-    this.blackHoleRadiusMeters = undefined;
-    this.speedMetersPerSecond = undefined;
-    this.gForce = undefined;
-    this.localElapsedTimeSeconds = 0;
-    this.globalElapsedTimeSeconds = 0;
+    this.cameraTarget = new QuantizedValue(this, (x) => 4 * x, 0, 4);
+    this.cameraYaw = new QuantizedValue(this, (x) => 2 * Math.PI * x, 0, 36000);
+    this.cameraPitch = new QuantizedValue(this, (x) => Math.PI * (x - 0.5), 9000, 18000);
+    this.exposure = new QuantizedValue(this, (x) => Math.pow(10, 3 * x - 3), 500);
+    this.bloom = new QuantizedValue(this, (x) => x, 500);
+    this.highDefinition = new BooleanValue(this, false);
+    this.highContrast = new BooleanValue(this, false);
+    this.startRadius = new QuantizedValue(this, (x) => Math.max(1 + 39 * x * x, 1.01), 940);
+    this.startDirection = new QuantizedValue(this, (x) => Math.PI * (x - 0.5), 1800, 1800);
+    this.startSpeed = new QuantizedValue(this, (x) => Math.min(x * x, 0.99), 347);
+    this.orbitInclination = new QuantizedValue(this, (x) => Math.PI * (x - 0.5), 970, 1799);
+    this.lensing = new BooleanValue(this, true);
+    this.doppler = new BooleanValue(this, true);
+    this.grid = new BooleanValue(this, false);
+    this.blackHoleMass = new QuantizedValue(this, (x) => 10 * Math.pow(10, 6 * x), 384);
+    this.discDensity = new QuantizedValue(this, (x) => 100 * Math.pow(x, 10), 500);
+    this.discOpacity = new QuantizedValue(this, (x) => x, 300);
+    this.discTemperature = new QuantizedValue(this, (x) => 1000 * Math.pow(10, x), 430);
+    this.rocketDistance = new QuantizedValue(this, (x) => 30 + 50 * x, 500);
+    this.rocket = new BooleanValue(this, false);
+    this.starsYaw = new QuantizedValue(this, (x) => 2 * Math.PI * (x - 0.5), 1800, 3600);
+    this.starsPitch = new QuantizedValue(this, (x) => Math.PI * (x - 0.5), 900, 1800);
+    this.starsRoll = new QuantizedValue(this, (x) => 2 * Math.PI * (x - 0.5), 1800, 3600);
+    this.stars = new BooleanValue(this, true);
 
     this.updateDerivedValues();
-    this.listeners = [];
   }
 
-  addListener(listener) {
+  addListener(listener: ValueListener): void {
     this.listeners.push(listener);
   }
 
-  setState(state) {
+  setState(state: StateType): void {
     if (state != this.state) {
       this.state = state;
       if (state == State.PLAYING) {
@@ -230,16 +224,15 @@ class Model {
     }
   }
 
-  updateOrbit(dTauSeconds) {
+  updateOrbit(dTauSeconds: number): void {
     const M = this.blackHoleMass.getValue() * SOLAR_MASS;
-    const dTauOverDtauSeconds = C * C * C / ( 2 * G * M);
+    const dTauOverDtauSeconds = C * C * C / (2 * G * M);
     const dTau = dTauOverDtauSeconds * dTauSeconds;
 
     let u = 1 / this.r;
     const e = this.e;
     const l = this.l;
-    const dtOverDtau = 
-        this.state == State.PLAYING ? e / (1 - u) : 1 / Math.sqrt(1 - u);
+    const dtOverDtau = this.state == State.PLAYING ? e / (1 - u) : 1 / Math.sqrt(1 - u);
     this.t += dtOverDtau * dTau;
     this.localElapsedTimeSeconds += dTauSeconds;
     this.globalElapsedTimeSeconds += dtOverDtau * dTauSeconds;
@@ -262,7 +255,7 @@ class Model {
     this.notifyListeners(false);
   }
 
-  notifyListeners(settingsChanged = true) {
+  notifyListeners(settingsChanged = true): void {
     this.updateDerivedValues();
     for (let listener of this.listeners) {
       if (settingsChanged) {
@@ -272,7 +265,7 @@ class Model {
     }
   }
 
-  updateDerivedValues() {
+  updateDerivedValues(): void {
     this.updateStarsMatrix();
     this.updateCameraCoordinates();
     this.updateCameraAndRocketLorentzTransforms();
@@ -280,7 +273,7 @@ class Model {
     this.updateOrbitInfo();
   }
 
-  updateStarsMatrix() {
+  updateStarsMatrix(): void {
     const cy = Math.cos(this.starsYaw.getValue() + Math.PI);
     const sy = Math.sin(this.starsYaw.getValue() + Math.PI);
     const cp = Math.cos(this.starsPitch.getValue());
@@ -288,13 +281,13 @@ class Model {
     const cr = Math.cos(this.starsRoll.getValue());
     const sr = Math.sin(this.starsRoll.getValue());
     this.starsMatrix = [
-                     cp * cy,                cp * sy,     -sp,
+      cp * cy,                cp * sy,     -sp,
       sr * sp * cy - cr * sy, sr * sp * sy + cr * cy, sr * cp,
       cr * sp * cy + sr * sy, cr * sp * sy - sr * cy, cr * cp
     ];
   }
 
-  updateCameraCoordinates() {
+  updateCameraCoordinates(): void {
     const r0 = this.startRadius.getValue();
     const delta = this.startDirection.getValue();
     const v = this.startSpeed.getValue();
@@ -323,22 +316,17 @@ class Model {
     this.worldPhi = Math.atan2(sphi, cphi * ci);
   }
 
-  updateCameraAndRocketLorentzTransforms() {
-    // Compute the 4-velocity vector of the camera (in rotated Schwarzschild
-    // coordinates such that its orbit is in the equatorial plane).
+  updateCameraAndRocketLorentzTransforms(): void {
     const e = this.e;
     const l = this.l;
     const u = 1 / this.r;
-    let k;
+    let k: number[];
     if (this.state == State.PLAYING) {
       k = [e / (1 - u), this.drOverDtau, 0, l * u * u];
     } else {
       k = [1 / Math.sqrt(1 - u), 0, 0, 0];
     }
 
-    // Compute the rotation matrix from the global Schwarzschild reference frame
-    // e_t, e_r, e_theta, e_phi to the rotated Schwarzschild reference frame
-    // such that the camera orbit is in the equatorial plane.
     const ct = Math.cos(this.worldTheta);
     const st = Math.sin(this.worldTheta);
     const cp = Math.cos(this.worldPhi);
@@ -353,25 +341,17 @@ class Model {
       [0, 0, ca, -sa],
       [0, 0, sa,  ca]];
 
-    // Compute the 4-velocity of the camera in the *rotated* reference frame of 
-    // a STATIC observer at this location.
-    const k_s = 
-        [k[0] * Math.sqrt(1 - u), k[1] / Math.sqrt(1 - u), k[2] / u, k[3] / u];
-    // Compute the speed vector of the camera in the *rotated* reference frame
-    // of a STATIC observer at this location.
+    const k_s = [k[0] * Math.sqrt(1 - u), k[1] / Math.sqrt(1 - u), k[2] / u, k[3] / u];
     const v = [k_s[1] / k_s[0], k_s[2] / k_s[0], k_s[3] / k_s[0]];
-    // Compute the corresponding Lorentz factor gamma and the corresponding
-    // Lorentz boost matrix (for a rotated static observer).
     const v2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
     const gamma = 1 / Math.sqrt(1 - v2);
     const gv = v2 == 0 ? 0 : (gamma - 1) / v2;
     const boost = [
-        [     gamma,       gamma*v[0],       gamma*v[1],       gamma*v[2]],
-        [gamma*v[0], 1 + gv*v[0]*v[0],     gv*v[0]*v[1],     gv*v[0]*v[2]],
-        [gamma*v[1],     gv*v[1]*v[0], 1 + gv*v[1]*v[1],     gv*v[1]*v[2]],
-        [gamma*v[2],     gv*v[2]*v[0],     gv*v[2]*v[1], 1 + gv*v[2]*v[2]]];
+      [     gamma,       gamma*v[0],       gamma*v[1],       gamma*v[2]],
+      [gamma*v[0], 1 + gv*v[0]*v[0],     gv*v[0]*v[1],     gv*v[0]*v[2]],
+      [gamma*v[1],     gv*v[1]*v[0], 1 + gv*v[1]*v[1],     gv*v[1]*v[2]],
+      [gamma*v[2],     gv*v[2]*v[0],     gv*v[2]*v[1], 1 + gv*v[2]*v[2]]];
 
-    // Compute the direction the camera should be looking at.
     this.cameraYawOffset = 0;
     if (this.state == State.PLAYING) {
       if (this.cameraTarget.getValue() == Target.BLACK_HOLE) {
@@ -381,47 +361,41 @@ class Model {
             (Target.FORWARD - this.cameraTarget.getValue()) * Math.PI / 2;
       }
     }
-    // Compute the rotation matrix of the camera, in its local reference frame.
     const cosY = Math.cos(this.cameraYaw.getValue() + this.cameraYawOffset);
     const sinY = Math.sin(this.cameraYaw.getValue() + this.cameraYawOffset);
     const cosP = Math.cos(this.cameraPitch.getValue());
     const sinP = Math.sin(this.cameraPitch.getValue());
     const cameraRot = [
-        [1,            0,     0,            0],
-        [0,        -sinY,     0,         cosY],
-        [0, -cosY * sinP, -cosP, -sinY * sinP],
-        [0,  cosY * cosP, -sinP,  sinY * cosP]];
+      [1,            0,     0,            0],
+      [0,        -sinY,     0,         cosY],
+      [0, -cosY * sinP, -cosP, -sinY * sinP],
+      [0,  cosY * cosP, -sinP,  sinY * cosP]];
 
-    // The final Lorentz transform is the product of the 3 above matrices.
     this.lorentz = matrixProduct(cameraRot, matrixProduct(boost, orbitRot));
 
-    // Compute the direction of the rocket.
     if (this.state == State.PLAYING) {
       this.rocketYaw = this.getYaw(boost, k_s[1], k_s[3]);
     } else {
       this.rocketYaw = 0;
     }
-    // Compute the rotation matrix of the rocket.
     const cosRy = Math.cos(this.rocketYaw);
     const sinRy = Math.sin(this.rocketYaw);
     const rocketRot = [
-        [1,      0,  0,     0],
-        [0, -sinRy,  0, cosRy],
-        [0,      0, -1,     0],
-        [0,  cosRy,  0, sinRy]];
-    // The final Lorentz transform is the product of the 3 above matrices.
-    this.rocketLorentz = 
-        matrixProduct(rocketRot, matrixProduct(boost, orbitRot));
+      [1,      0,  0,     0],
+      [0, -sinRy,  0, cosRy],
+      [0,      0, -1,     0],
+      [0,  cosRy,  0, sinRy]];
+    this.rocketLorentz = matrixProduct(rocketRot, matrixProduct(boost, orbitRot));
   }
 
-  getYaw(boost, dr, dphi) {
+  getYaw(boost: number[][], dr: number, dphi: number): number {
     const dt = -Math.sqrt(dr * dr + dphi * dphi);
     const dr0 = -boost[1][0] * dt + boost[1][1] * dr + boost[1][3] * dphi;
     const dphi0 = -boost[3][0] * dt + boost[3][1] * dr + boost[3][3] * dphi;
     return Math.atan2(dphi0, dr0);
   }
 
-  updateCameraAndRocketReferenceFrames() {
+  updateCameraAndRocketReferenceFrames(): void {
     const r = this.r;
     const cos_theta = Math.cos(this.worldTheta);
     const sin_theta = Math.sin(this.worldTheta);
@@ -453,7 +427,7 @@ class Model {
     this.kS = [L[0][0] / v, v * L[0][1], u * L[0][2], u / sin_theta * L[0][3]];
   }
 
-  updateOrbitInfo() {
+  updateOrbitInfo(): void {
     const M = this.blackHoleMass.getValue() * SOLAR_MASS;
     this.blackHoleRadiusMeters = 2 * G  * M / (C * C);
     const e = this.e;
@@ -470,7 +444,3 @@ class Model {
     }
   }
 }
-
-BlackHoleShaderDemoApp.State = State;
-BlackHoleShaderDemoApp.model = new Model();
-})();

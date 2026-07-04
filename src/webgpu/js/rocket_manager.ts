@@ -1,4 +1,5 @@
-(function() {
+import { Model } from '../../common/model';
+import type { CameraView } from './camera_view';
 
 const NEAR_PLANE = 0.1;
 const FAR_PLANE = 100.0;
@@ -38,11 +39,11 @@ fn frag_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 `;
 
-const loadRocketMesh = function(rocketDataUrl, callback) {
+const loadRocketMesh = function(rocketDataUrl: string, callback: (vertices: Float32Array, indices: Uint32Array) => void): void {
   const xhr = new XMLHttpRequest();
   xhr.open('GET', rocketDataUrl);
   xhr.responseType = 'arraybuffer';
-  xhr.onload = (event) => {
+  xhr.onload = () => {
     if (xhr.status !== 200) {
       console.error("Failed to load rocket mesh binary:", rocketDataUrl, "status:", xhr.status);
       return;
@@ -67,7 +68,11 @@ const loadRocketMesh = function(rocketDataUrl, callback) {
   xhr.send();
 };
 
-const loadRocketTexture = function(device, textureUrl) {
+interface TextureWrapper {
+  texture: GPUTexture;
+}
+
+const loadRocketTexture = function(device: GPUDevice, textureUrl: string): TextureWrapper {
   const texture = device.createTexture({
     size: [1, 1, 1],
     format: 'rgba8unorm',
@@ -91,9 +96,9 @@ const loadRocketTexture = function(device, textureUrl) {
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
       });
 
-      // Mipmap generation using Canvas API for absolute robustness
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error("Could not get 2D context");
       let levelWidth = imageBitmap.width;
       let levelHeight = imageBitmap.height;
       let level = 0;
@@ -121,8 +126,46 @@ const loadRocketTexture = function(device, textureUrl) {
   return wrapper;
 };
 
-class RocketManager {
-  constructor(model, cameraView) {
+export class RocketManager {
+  private model: Model;
+  private cameraView: CameraView;
+  private device: GPUDevice;
+
+  private rocketUniformBuffer: GPUBuffer;
+  private exhaustUniformBuffer: GPUBuffer;
+  private envMapUniformBuffers: GPUBuffer[] = [];
+
+  private baseColorTextureWrapper: TextureWrapper;
+  private occlusionRoughnessMetallicTextureWrapper: TextureWrapper;
+  private normalMapTextureWrapper: TextureWrapper;
+
+  private envMapBindGroups: GPUBindGroup[] | null = null;
+  private cachedEnvMapSkyTexture: GPUTexture | null = null;
+
+  private rocketVertexBuffer: GPUBuffer | null = null;
+  private rocketIndexBuffer: GPUBuffer | null = null;
+  private rocketIndexCount = 0;
+
+  private exhaustVertexBuffer: GPUBuffer | null = null;
+  private exhaustIndexBuffer: GPUBuffer | null = null;
+  private exhaustIndexCount = 0;
+
+  private envMapTexture!: GPUTexture;
+  private rocketBindGroupLayout!: GPUBindGroupLayout;
+  private rocketPipeline!: GPURenderPipeline;
+  private exhaustBindGroupLayout!: GPUBindGroupLayout;
+  private exhaustPipelineFront!: GPURenderPipeline;
+  private exhaustPipelineBack!: GPURenderPipeline;
+  private mipmapBindGroupLayout!: GPUBindGroupLayout;
+  private mipmapPipeline!: GPURenderPipeline;
+  private exhaustBindGroup!: GPUBindGroup;
+
+  private rocketBindGroup: GPUBindGroup | null = null;
+  private cachedBaseColor: GPUTexture | null = null;
+  private cachedMetallic: GPUTexture | null = null;
+  private cachedNormal: GPUTexture | null = null;
+
+  constructor(model: Model, cameraView: CameraView) {
     this.model = model;
     this.cameraView = cameraView;
     this.device = cameraView.device;
@@ -168,7 +211,7 @@ class RocketManager {
     this.createExhaustBuffers();
   }
 
-  createEnvMapTexture() {
+  private createEnvMapTexture(): void {
     this.envMapTexture = this.device.createTexture({
       label: 'RocketEnvMapCubeTexture',
       size: [ENV_MAP_SIZE, ENV_MAP_SIZE, 6],
@@ -178,9 +221,7 @@ class RocketManager {
     });
   }
 
-  createRocketPipeline() {
-    const tm = this.cameraView.textureManager;
-
+  private createRocketPipeline(): void {
     this.rocketBindGroupLayout = this.device.createBindGroupLayout({
       label: 'RocketBindGroupLayout',
       entries: [
@@ -193,9 +234,11 @@ class RocketManager {
       ]
     });
 
+    const rocketShaderElement = document.querySelector('#rocket_shader');
+    if (!rocketShaderElement) throw new Error("rocket_shader script element not found");
     const rocketShaderModule = this.device.createShaderModule({
       label: 'RocketShader',
-      code: document.querySelector('#rocket_shader').textContent
+      code: rocketShaderElement.textContent || ""
     });
 
     this.rocketPipeline = this.device.createRenderPipeline({
@@ -207,33 +250,33 @@ class RocketManager {
         buffers: [{
           arrayStride: 52,
           attributes: [
-            { shaderLocation: 0, offset: 0, format: 'float32x3' },
-            { shaderLocation: 1, offset: 12, format: 'float32x3' },
-            { shaderLocation: 2, offset: 24, format: 'float32x4' },
-            { shaderLocation: 3, offset: 40, format: 'float32x2' },
-            { shaderLocation: 4, offset: 48, format: 'float32' }
+            { shaderLocation: 0, offset: 0, format: 'float32x3' as GPUVertexFormat },
+            { shaderLocation: 1, offset: 12, format: 'float32x3' as GPUVertexFormat },
+            { shaderLocation: 2, offset: 24, format: 'float32x4' as GPUVertexFormat },
+            { shaderLocation: 3, offset: 40, format: 'float32x2' as GPUVertexFormat },
+            { shaderLocation: 4, offset: 48, format: 'float32' as GPUVertexFormat }
           ]
         }]
       },
       fragment: {
         module: rocketShaderModule,
         entryPoint: 'frag_main',
-        targets: [{ format: 'rgba16float' }]
+        targets: [{ format: 'rgba16float' as GPUTextureFormat }]
       },
       primitive: {
-        topology: 'triangle-list',
-        frontFace: 'ccw',
-        cullMode: 'back'
+        topology: 'triangle-list' as GPUPrimitiveTopology,
+        frontFace: 'ccw' as GPUFrontFace,
+        cullMode: 'back' as GPUCullMode
       },
       depthStencil: {
-        format: 'depth24plus',
+        format: 'depth24plus' as GPUTextureFormat,
         depthWriteEnabled: true,
-        depthCompare: 'less'
+        depthCompare: 'less' as GPUCompareFunction
       }
     });
   }
 
-  createExhaustPipeline() {
+  private createExhaustPipeline(): void {
     this.exhaustBindGroupLayout = this.device.createBindGroupLayout({
       label: 'ExhaustBindGroupLayout',
       entries: [
@@ -241,14 +284,16 @@ class RocketManager {
       ]
     });
 
+    const exhaustShaderElement = document.querySelector('#exhaust_shader');
+    if (!exhaustShaderElement) throw new Error("exhaust_shader script element not found");
     const exhaustShaderModule = this.device.createShaderModule({
       label: 'ExhaustShader',
-      code: document.querySelector('#exhaust_shader').textContent
+      code: exhaustShaderElement.textContent || ""
     });
 
     const pipelineLayout = this.device.createPipelineLayout({ bindGroupLayouts: [this.exhaustBindGroupLayout] });
 
-    const exhaustDesc = (cullMode) => ({
+    const exhaustDesc = (cullMode: GPUCullMode): GPURenderPipelineDescriptor => ({
       label: `ExhaustPipeline_${cullMode}`,
       layout: pipelineLayout,
       vertex: {
@@ -256,29 +301,29 @@ class RocketManager {
         entryPoint: 'vert_main',
         buffers: [{
           arrayStride: 12,
-          attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }]
+          attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' as GPUVertexFormat }]
         }]
       },
       fragment: {
         module: exhaustShaderModule,
         entryPoint: 'frag_main',
         targets: [{
-          format: 'rgba16float',
+          format: 'rgba16float' as GPUTextureFormat,
           blend: {
-            color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
-            alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' }
+            color: { srcFactor: 'one' as GPUBlendFactor, dstFactor: 'one' as GPUBlendFactor, operation: 'add' as GPUBlendOperation },
+            alpha: { srcFactor: 'one' as GPUBlendFactor, dstFactor: 'one' as GPUBlendFactor, operation: 'add' as GPUBlendOperation }
           }
         }]
       },
       primitive: {
-        topology: 'triangle-list',
-        frontFace: 'ccw',
+        topology: 'triangle-list' as GPUPrimitiveTopology,
+        frontFace: 'ccw' as GPUFrontFace,
         cullMode: cullMode
       },
       depthStencil: {
-        format: 'depth24plus',
+        format: 'depth24plus' as GPUTextureFormat,
         depthWriteEnabled: false,
-        depthCompare: 'less'
+        depthCompare: 'less' as GPUCompareFunction
       }
     });
 
@@ -294,7 +339,7 @@ class RocketManager {
     });
   }
 
-  createMipmapPipeline() {
+  private createMipmapPipeline(): void {
     this.mipmapBindGroupLayout = this.device.createBindGroupLayout({
       label: 'MipmapDownsampleBindGroupLayout',
       entries: [
@@ -321,7 +366,7 @@ class RocketManager {
     });
   }
 
-  createRocketBuffers(vertices, indices) {
+  private createRocketBuffers(vertices: Float32Array, indices: Uint32Array): void {
     this.rocketVertexBuffer = this.device.createBuffer({
       label: 'RocketVertexBuffer',
       size: vertices.byteLength,
@@ -338,7 +383,7 @@ class RocketManager {
     this.rocketIndexCount = indices.length;
   }
 
-  createExhaustBuffers() {
+  private createExhaustBuffers(): void {
     const NUM_CIRCUMFERENCE_SAMPLES = 32;
 
     const vertices = new Float32Array(6 * (NUM_CIRCUMFERENCE_SAMPLES + 1));
@@ -386,7 +431,7 @@ class RocketManager {
     this.exhaustIndexCount = indices.length;
   }
 
-  getRocketBindGroup() {
+  private getRocketBindGroup(): GPUBindGroup | null {
     const tm = this.cameraView.textureManager;
     const baseColor = this.baseColorTextureWrapper.texture;
     const metallic = this.occlusionRoughnessMetallicTextureWrapper.texture;
@@ -418,9 +463,12 @@ class RocketManager {
     return this.rocketBindGroup;
   }
 
-  getEnvMapBindGroups() {
+  private getEnvMapBindGroups(): GPUBindGroup[] | null {
     const tm = this.cameraView.textureManager;
     const skyTexture = this.model.grid.getValue() ? tm.gridTexture : tm.galaxyTexture;
+    if (!skyTexture || !tm.starTexture || !tm.starTexture2 || !tm.blackbodyTexture || !tm.dopplerTexture || !tm.noiseTexture) {
+      return null;
+    }
 
     if (this.envMapBindGroups && this.cachedEnvMapSkyTexture === skyTexture) {
       return this.envMapBindGroups;
@@ -436,8 +484,8 @@ class RocketManager {
         entries: [
           { binding: 0, resource: { buffer: this.envMapUniformBuffers[face] } },
           { binding: 1, resource: tm.linearSampler },
-          { binding: 2, resource: tm.rayDeflectionTexture.createView() },
-          { binding: 3, resource: tm.rayInverseRadiusTexture.createView() },
+          { binding: 2, resource: tm.rayDeflectionTexture!.createView() },
+          { binding: 3, resource: tm.rayInverseRadiusTexture!.createView() },
           { binding: 4, resource: skyTexture.createView({ dimension: 'cube' }) },
           { binding: 5, resource: tm.starTexture.createView({ dimension: 'cube' }) },
           { binding: 6, resource: tm.starTexture2.createView({ dimension: 'cube' }) },
@@ -452,7 +500,7 @@ class RocketManager {
     return this.envMapBindGroups;
   }
 
-  updateEnvMapUniforms(faceIndex, eW, eH, eD) {
+  private updateEnvMapUniforms(faceIndex: number, eW: number[], eH: number[], eD: number[]): void {
     const model = this.model;
     const data = new Float32Array(108);
 
@@ -539,7 +587,7 @@ class RocketManager {
     this.device.queue.writeBuffer(this.envMapUniformBuffers[faceIndex], 0, data);
   }
 
-  setCameraUniforms(modelViewProjMatrix, cameraPos) {
+  private setCameraUniforms(modelViewProjMatrix: Float32Array, cameraPos: Float32Array): void {
     const yaw = this.model.cameraYaw.getValue() + this.model.cameraYawOffset -
         this.model.rocketYaw;
     const cameraDist = this.model.rocketDistance.getValue() / 2;
@@ -591,44 +639,37 @@ class RocketManager {
     cameraPos[2] = camera[2];
   }
 
-  renderEnvMap(commandEncoder) {
+  renderEnvMap(commandEncoder: GPUCommandEncoder): void {
     const model = this.model;
     const envMapBindGroups = this.getEnvMapBindGroups();
     if (!envMapBindGroups) return;
 
-    // Calculate directions for the 6 faces (matching WebGL)
     const faces = [
-      // POSITIVE_X: eW = -rocketD, eH = -rocketH, eD = -rocketW
       {
         eW: [-model.rocketD[1], -model.rocketD[2], -model.rocketD[3]],
         eH: [-model.rocketH[1], -model.rocketH[2], -model.rocketH[3]],
         eD: [-model.rocketW[1], -model.rocketW[2], -model.rocketW[3]]
       },
-      // NEGATIVE_X: eW = rocketD, eH = -rocketH, eD = rocketW
       {
         eW: [model.rocketD[1], model.rocketD[2], model.rocketD[3]],
         eH: [-model.rocketH[1], -model.rocketH[2], -model.rocketH[3]],
         eD: [model.rocketW[1], model.rocketW[2], model.rocketW[3]]
       },
-      // POSITIVE_Y: eW = rocketW, eH = rocketD, eD = -rocketH
       {
         eW: [model.rocketW[1], model.rocketW[2], model.rocketW[3]],
         eH: [model.rocketD[1], model.rocketD[2], model.rocketD[3]],
         eD: [-model.rocketH[1], -model.rocketH[2], -model.rocketH[3]]
       },
-      // NEGATIVE_Y: eW = rocketW, eH = -rocketD, eD = rocketH
       {
         eW: [model.rocketW[1], model.rocketW[2], model.rocketW[3]],
         eH: [-model.rocketD[1], -model.rocketD[2], -model.rocketD[3]],
         eD: [model.rocketH[1], model.rocketH[2], model.rocketH[3]]
       },
-      // POSITIVE_Z: eW = rocketW, eH = -rocketH, eD = -rocketD
       {
         eW: [model.rocketW[1], model.rocketW[2], model.rocketW[3]],
         eH: [-model.rocketH[1], -model.rocketH[2], -model.rocketH[3]],
         eD: [-model.rocketD[1], -model.rocketD[2], -model.rocketD[3]]
       },
-      // NEGATIVE_Z: eW = -rocketW, eH = -rocketH, eD = rocketD
       {
         eW: [-model.rocketW[1], -model.rocketW[2], -model.rocketW[3]],
         eH: [-model.rocketH[1], -model.rocketH[2], -model.rocketH[3]],
@@ -636,7 +677,6 @@ class RocketManager {
       }
     ];
 
-    // Render the black hole scene into the 6 faces at mipLevel 0
     for (let face = 0; face < 6; ++face) {
       this.updateEnvMapUniforms(face, faces[face].eW, faces[face].eH, faces[face].eD);
 
@@ -655,14 +695,13 @@ class RocketManager {
           storeOp: 'store'
         }]
       });
-      passEncoder.setPipeline(this.cameraView.pipeline);
+      passEncoder.setPipeline(this.cameraView.pipeline!);
       passEncoder.setBindGroup(0, envMapBindGroups[face]);
       passEncoder.setViewport(0, 0, ENV_MAP_SIZE, ENV_MAP_SIZE, 0, 1);
       passEncoder.draw(4, 1, 0, 0);
       passEncoder.end();
     }
 
-    // Generate mipmaps procedurally for the cubemap
     for (let level = 1; level < ENV_MAP_LEVELS; ++level) {
       const size = ENV_MAP_SIZE >> level;
       for (let face = 0; face < 6; ++face) {
@@ -707,28 +746,25 @@ class RocketManager {
     }
   }
 
-  drawRocket(passEncoder) {
+  drawRocket(passEncoder: GPURenderPassEncoder): void {
     if (!this.rocketVertexBuffer || this.rocketIndexCount === 0) return;
     const bindGroup = this.getRocketBindGroup();
     if (!bindGroup) return;
 
-    // Update uniform buffer
     const data = new Float32Array(20);
     this.setCameraUniforms(data.subarray(0, 16), data.subarray(16, 19));
     this.device.queue.writeBuffer(this.rocketUniformBuffer, 0, data);
 
-    // Draw mesh
     passEncoder.setPipeline(this.rocketPipeline);
     passEncoder.setBindGroup(0, bindGroup);
     passEncoder.setVertexBuffer(0, this.rocketVertexBuffer);
-    passEncoder.setIndexBuffer(this.rocketIndexBuffer, 'uint32');
+    passEncoder.setIndexBuffer(this.rocketIndexBuffer!, 'uint32');
     passEncoder.drawIndexed(this.rocketIndexCount, 1, 0, 0, 0);
   }
 
-  drawExhaust(passEncoder, tauSeconds, gForce) {
+  drawExhaust(passEncoder: GPURenderPassEncoder, tauSeconds: number, gForce: number): void {
     if (!this.exhaustVertexBuffer || this.exhaustIndexCount === 0) return;
 
-    // Calculate dynamic parameters matching WebGL
     const intensityVal = 0.1 * Math.pow(gForce, 0.75);
     const intensity = [46 / 255 * intensityVal, 176 / 255 * intensityVal, intensityVal];
 
@@ -745,7 +781,6 @@ class RocketManager {
     const DZ = EXHAUST_Z_MAX - EXHAUST_Z_MIN;
     const kZ = [kZ1 / DZ, kZ2 / DZ, kZ3 / DZ];
 
-    // Update uniform buffer
     const data = new Float32Array(32);
     this.setCameraUniforms(data.subarray(0, 16), data.subarray(16, 19));
     data[20] = intensity[0];
@@ -759,20 +794,14 @@ class RocketManager {
     data[30] = kZ[2];
     this.device.queue.writeBuffer(this.exhaustUniformBuffer, 0, data);
 
-    // Draw plume
-    passEncoder.setBindGroup(0, this.exhaustBindGroup);
     passEncoder.setVertexBuffer(0, this.exhaustVertexBuffer);
-    passEncoder.setIndexBuffer(this.exhaustIndexBuffer, 'uint32');
+    passEncoder.setIndexBuffer(this.exhaustIndexBuffer!, 'uint32');
 
-    // Draw back faces
+    passEncoder.setBindGroup(0, this.exhaustBindGroup);
     passEncoder.setPipeline(this.exhaustPipelineBack);
     passEncoder.drawIndexed(this.exhaustIndexCount, 1, 0, 0, 0);
 
-    // Draw front faces
     passEncoder.setPipeline(this.exhaustPipelineFront);
     passEncoder.drawIndexed(this.exhaustIndexCount, 1, 0, 0, 0);
   }
 }
-
-BlackHoleShaderDemoApp.RocketManager = RocketManager;
-})();

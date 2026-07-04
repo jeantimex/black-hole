@@ -1,4 +1,4 @@
-const BLOOM_FILTERS = [
+const BLOOM_FILTERS: (number | number[][])[] = [
   600,
   [[0.537425,0.0200663,0.00720805,0.00159719,0.000907315,0.000275641],
    [0.102792,0.0185013,0.00291111,0.000519003,0.000519003,0.000519003],
@@ -60,9 +60,6 @@ const BLOOM_FILTERS = [
    [0.00430923,0.00430923,0.00381212,0.00381212,0.00055036,0],
    [0.00247558,0.00247558,0.00247558,0.00247558,0.00247558,0.00247558]],
 ];
-
-// Provides a bloom shader effect by mipmapping an input image, filtering each
-// mipmap with a small kernel, and upsampling and adding the filtered images.
 
 const MAX_LEVELS = 9;
 const MAX_FLOAT16 = '6.55e4';
@@ -154,8 +151,6 @@ const RENDER_SHADER =
     return pow(vec3(1.0) - exp(-color), vec3(1.0 / 2.2));
   }
   
-  // ACES tone map, see
-  // https://knarkowicz.wordpress.com/2016/01/06/aces-filmic-tone-mapping-curve/
   vec3 toneMapACES(vec3 color) {
     const float A = 2.51;
     const float B = 0.03;
@@ -183,15 +178,17 @@ const RENDER_SHADER =
     frag_color = vec4(color, 1.0);
   }`;
 
-const createShader = function(gl, type, source) {
+const createShader = function(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
   const shader = gl.createShader(type);
+  if (!shader) throw new Error("Could not create shader");
   gl.shaderSource(shader, source);
   gl.compileShader(shader);
   return shader;
 };
 
-const createTexture = function(gl, textureUnit, target) {
+const createTexture = function(gl: WebGL2RenderingContext, textureUnit: number, target: number): WebGLTexture {
   const texture = gl.createTexture();
+  if (!texture) throw new Error("Could not create texture");
   gl.activeTexture(textureUnit);
   gl.bindTexture(target, texture);
   gl.texParameteri(target, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
@@ -201,92 +198,104 @@ const createTexture = function(gl, textureUnit, target) {
   return texture;
 };
 
-// Usage: create an instance for the desired viewport size, and draw your scene
-// between a call to begin() and a call to end(). Use resize() when the viewport
-// size changes.
-class Bloom {
+interface SizeableTexture {
+  texture: WebGLTexture;
+  width: number;
+  height: number;
+}
 
-  constructor(gl, width, height) {
+interface CustomWebGLProgram extends WebGLProgram {
+  sourceDeltaUvUniform?: WebGLUniformLocation | null;
+  intensityUniform?: WebGLUniformLocation | null;
+  exposureUniform?: WebGLUniformLocation | null;
+  highContrastUniform?: WebGLUniformLocation | null;
+  bloomDeltaUvUniform?: WebGLUniformLocation | null;
+}
+
+export class Bloom {
+  private gl: WebGL2RenderingContext;
+  private width: number;
+  private height: number;
+
+  private vertexBuffer: WebGLBuffer | null;
+  private downsampleProgram: CustomWebGLProgram;
+  private bloomProgram: CustomWebGLProgram;
+  private upsampleProgram: CustomWebGLProgram;
+  private renderProgram: CustomWebGLProgram;
+
+  private numLevels = 0;
+  private mipmapTextures: SizeableTexture[] = [];
+  private filterTextures: (SizeableTexture | null)[] = [];
+  private bloomFilters: number[][][] = [];
+
+  private mipmapFbos: WebGLFramebuffer[] = [];
+  private filterFbos: (WebGLFramebuffer | null)[] = [];
+  private depthBuffer: WebGLRenderbuffer | null = null;
+
+  constructor(gl: WebGL2RenderingContext, width: number, height: number) {
     this.gl = gl;
     this.width = width;
     this.height = height;
+
     gl.getExtension('OES_texture_float_linear');
     gl.getExtension('EXT_color_buffer_float');
     gl.getExtension('EXT_float_blend');
 
     this.vertexBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER,
-       new Float32Array([-1, -1, +1, -1, -1, +1, +1, +1]), gl.STATIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, +1, -1, -1, +1, +1, +1]), gl.STATIC_DRAW);
 
-    const vertexShader = 
-        createShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER);
+    const vertexShader = createShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER);
 
-    this.downsampleProgram = gl.createProgram();
-    gl.attachShader(this.downsampleProgram, vertexShader);
-    gl.attachShader(this.downsampleProgram, 
-        createShader(gl, gl.FRAGMENT_SHADER, DOWNSAMPLE_SHADER));
-    gl.linkProgram(this.downsampleProgram);
+    const createAndLinkProgram = (fragSource: string): CustomWebGLProgram => {
+      const p = gl.createProgram() as CustomWebGLProgram;
+      if (!p) throw new Error("Could not create program");
+      gl.attachShader(p, vertexShader);
+      gl.attachShader(p, createShader(gl, gl.FRAGMENT_SHADER, fragSource));
+      gl.linkProgram(p);
+      return p;
+    };
+
+    this.downsampleProgram = createAndLinkProgram(DOWNSAMPLE_SHADER);
     gl.useProgram(this.downsampleProgram);
     gl.uniform1i(gl.getUniformLocation(this.downsampleProgram, 'source'), 0);
-    this.downsampleProgram.sourceDeltaUvUniform = 
-        gl.getUniformLocation(this.downsampleProgram, 'source_delta_uv');
+    this.downsampleProgram.sourceDeltaUvUniform = gl.getUniformLocation(this.downsampleProgram, 'source_delta_uv');
 
-    this.bloomProgram = gl.createProgram();
-    gl.attachShader(this.bloomProgram, vertexShader);
-    gl.attachShader(this.bloomProgram, 
-        createShader(gl, gl.FRAGMENT_SHADER, 
-            BLOOM_SHADER.replace(/SIZE/g, 25)));
-    gl.linkProgram(this.bloomProgram);
+    this.bloomProgram = createAndLinkProgram(BLOOM_SHADER.replace(/SIZE/g, '25'));
     gl.useProgram(this.bloomProgram);
     gl.uniform1i(gl.getUniformLocation(this.bloomProgram, 'source'), 0);
-    this.bloomProgram.sourceDeltaUvUniform = 
-        gl.getUniformLocation(this.bloomProgram, 'source_delta_uv');
+    this.bloomProgram.sourceDeltaUvUniform = gl.getUniformLocation(this.bloomProgram, 'source_delta_uv');
 
-    this.upsampleProgram = gl.createProgram();
-    gl.attachShader(this.upsampleProgram, vertexShader);
-    gl.attachShader(this.upsampleProgram, 
-        createShader(gl, gl.FRAGMENT_SHADER, UPSAMPLE_SHADER));
-    gl.linkProgram(this.upsampleProgram);
+    this.upsampleProgram = createAndLinkProgram(UPSAMPLE_SHADER);
     gl.useProgram(this.upsampleProgram);
     gl.uniform1i(gl.getUniformLocation(this.upsampleProgram, 'source'), 0);
-    this.upsampleProgram.sourceDeltaUvUniform = 
-        gl.getUniformLocation(this.upsampleProgram, 'source_delta_uv');
+    this.upsampleProgram.sourceDeltaUvUniform = gl.getUniformLocation(this.upsampleProgram, 'source_delta_uv');
 
-    this.renderProgram = gl.createProgram();
-    gl.attachShader(this.renderProgram, vertexShader);
-    gl.attachShader(this.renderProgram, 
-        createShader(gl, gl.FRAGMENT_SHADER, 
-            RENDER_SHADER.replace(/SIZE/g, 25)));
-    gl.linkProgram(this.renderProgram);
+    this.renderProgram = createAndLinkProgram(RENDER_SHADER.replace(/SIZE/g, '25'));
     gl.useProgram(this.renderProgram);
     gl.uniform1i(gl.getUniformLocation(this.renderProgram, 'source'), 0);
     gl.uniform1i(gl.getUniformLocation(this.renderProgram, 'bloom'), 1);
-    this.renderProgram.intensityUniform = 
-        gl.getUniformLocation(this.renderProgram, 'intensity');
-    this.renderProgram.exposureUniform = 
-        gl.getUniformLocation(this.renderProgram, 'exposure');
-    this.renderProgram.highContrastUniform = 
-        gl.getUniformLocation(this.renderProgram, 'high_contrast');
-    this.renderProgram.sourceDeltaUvUniform = 
-        gl.getUniformLocation(this.renderProgram, 'source_delta_uv');
-    this.renderProgram.bloomDeltaUvUniform = 
-        gl.getUniformLocation(this.renderProgram, 'bloom_delta_uv'); 
+    this.renderProgram.intensityUniform = gl.getUniformLocation(this.renderProgram, 'intensity');
+    this.renderProgram.exposureUniform = gl.getUniformLocation(this.renderProgram, 'exposure');
+    this.renderProgram.highContrastUniform = gl.getUniformLocation(this.renderProgram, 'high_contrast');
+    this.renderProgram.sourceDeltaUvUniform = gl.getUniformLocation(this.renderProgram, 'source_delta_uv');
+    this.renderProgram.bloomDeltaUvUniform = gl.getUniformLocation(this.renderProgram, 'bloom_delta_uv');
 
     this.numLevels = 0;
     this.mipmapTextures = [];
     this.filterTextures = [];
     this.bloomFilters = [];
+
     for (let i = 0; i < MAX_LEVELS; ++i) {
       const mipmapTexture = createTexture(gl, gl.TEXTURE0, gl.TEXTURE_2D);
-      this.mipmapTextures.push(mipmapTexture);
+      this.mipmapTextures.push({ texture: mipmapTexture, width: 0, height: 0 });
       if (i > 0) {
         const filterTexture = createTexture(gl, gl.TEXTURE0, gl.TEXTURE_2D);
         if (i == 1) {
           gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
           gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
         }
-        this.filterTextures.push(filterTexture);
+        this.filterTextures.push({ texture: filterTexture, width: 0, height: 0 });
       } else {
         this.filterTextures.push(null);
       }
@@ -294,26 +303,28 @@ class Bloom {
 
     this.mipmapFbos = [];
     this.filterFbos = [];
-    this.depthBuffer = undefined;
+    this.depthBuffer = null;
+
     for (let i = 0; i < MAX_LEVELS; ++i) {
       const mipmapFbo = gl.createFramebuffer();
+      if (!mipmapFbo) throw new Error("Could not create framebuffer");
       this.mipmapFbos.push(mipmapFbo);
       gl.bindFramebuffer(gl.FRAMEBUFFER, mipmapFbo);
-      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, 
-          gl.TEXTURE_2D, this.mipmapTextures[i], 0);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.mipmapTextures[i].texture, 0);
       if (i > 0) {
         const filterFbo = gl.createFramebuffer();
+        if (!filterFbo) throw new Error("Could not create framebuffer");
         this.filterFbos.push(filterFbo);
         gl.bindFramebuffer(gl.FRAMEBUFFER, filterFbo);
-        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, 
-            gl.TEXTURE_2D, this.filterTextures[i], 0);
+        const filterTex = this.filterTextures[i];
+        if (filterTex) {
+          gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, filterTex.texture, 0);
+        }
       } else {
         this.depthBuffer = gl.createRenderbuffer();
         gl.bindRenderbuffer(gl.RENDERBUFFER, this.depthBuffer);
-        gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16,
-            this.mipmapTextures[0].width, this.mipmapTextures[0].height);
-        gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT,
-            gl.RENDERBUFFER, this.depthBuffer);
+        gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, this.mipmapTextures[0].width, this.mipmapTextures[0].height);
+        gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, this.depthBuffer);
         this.filterFbos.push(null);
       }
     }
@@ -322,7 +333,7 @@ class Bloom {
     this.resize(width, height);
   }
 
-  resize(width, height) {
+  resize(width: number, height: number): void {
     this.width = width;
     this.height = height;
 
@@ -331,68 +342,67 @@ class Bloom {
     let level = 0;
     let w = width;
     let h = height;
+
     while (h > 2 && level < MAX_LEVELS) {
-      gl.bindTexture(gl.TEXTURE_2D, this.mipmapTextures[level]);
-      gl.texImage2D(
-          gl.TEXTURE_2D, 0, gl.RGBA16F, w + 2, h + 2, 0, gl.RGBA, gl.FLOAT, 
-          null);
-      this.mipmapTextures[level].width = w + 2;
-      this.mipmapTextures[level].height = h + 2;
-      if (level > 0) {
-        gl.bindTexture(gl.TEXTURE_2D, this.filterTextures[level]);
-        gl.texImage2D(
-           gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.FLOAT, null);
-        this.filterTextures[level].width = w;
-        this.filterTextures[level].height = h;
-      } else {
+      const mipmapTex = this.mipmapTextures[level];
+      gl.bindTexture(gl.TEXTURE_2D, mipmapTex.texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w + 2, h + 2, 0, gl.RGBA, gl.FLOAT, null);
+      mipmapTex.width = w + 2;
+      mipmapTex.height = h + 2;
+
+      const filterTex = this.filterTextures[level];
+      if (level > 0 && filterTex) {
+        gl.bindTexture(gl.TEXTURE_2D, filterTex.texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.FLOAT, null);
+        filterTex.width = w;
+        filterTex.height = h;
+      } else if (level === 0) {
         gl.bindRenderbuffer(gl.RENDERBUFFER, this.depthBuffer);
-        gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16,
-            this.mipmapTextures[0].width, this.mipmapTextures[0].height);
+        gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, this.mipmapTextures[0].width, this.mipmapTextures[0].height);
       }
+
       level += 1;
       w = Math.ceil(w / 2);
       h = Math.ceil(h / 2);
     }
     this.numLevels = level;
 
+    this.bloomFilters = [];
     let nearest_size_index = 0;
-    let nearest_size = BLOOM_FILTERS[nearest_size_index];
+    let nearest_size = BLOOM_FILTERS[nearest_size_index] as number;
     for (let i = 2; i < BLOOM_FILTERS.length; i += 2) {
-      const size = BLOOM_FILTERS[i]
-      if (Math.abs(BLOOM_FILTERS[i] - height) < 
-          Math.abs(nearest_size - height)) {
+      const currentSize = BLOOM_FILTERS[i] as number;
+      if (Math.abs(currentSize - height) < Math.abs(nearest_size - height)) {
         nearest_size_index = i;
-        nearest_size = BLOOM_FILTERS[i];
+        nearest_size = currentSize;
       }
     }
 
-    const filters = BLOOM_FILTERS[nearest_size_index + 1];
+    const filters = BLOOM_FILTERS[nearest_size_index + 1] as number[][];
     for (let i = 0; i < this.numLevels; ++i) {
-      const bloomFilter = [];
-      const width = this.mipmapTextures[i].width;
-      const height = this.mipmapTextures[i].height;
+      const bloomFilter: number[][] = [];
+      const mWidth = this.mipmapTextures[i].width;
+      const mHeight = this.mipmapTextures[i].height;
       for (let y = -2; y <= 2; ++y) {
         const iy = Math.abs(y);
         for (let x = -2; x <= 2; ++x) {
           const ix = Math.abs(x);
-          const index = 
-              ix < iy ? (iy * (iy + 1)) / 2 + ix : (ix * (ix + 1)) / 2 + iy;
-          const w = filters[i][index];
-          bloomFilter.push([x / width, y / height, w]);
+          const index = ix < iy ? (iy * (iy + 1)) / 2 + ix : (ix * (ix + 1)) / 2 + iy;
+          const wt = filters[i][index];
+          bloomFilter.push([x / mWidth, y / mHeight, wt]);
         }
       }
       this.bloomFilters.push(bloomFilter);
     }
   }
 
-  begin() {
+  begin(): void {
     const gl = this.gl;
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.mipmapFbos[0]);
-    gl.viewport(1, 1, this.mipmapTextures[0].width - 2, 
-        this.mipmapTextures[0].height - 2);
+    gl.viewport(1, 1, this.mipmapTextures[0].width - 2, this.mipmapTextures[0].height - 2);
   }
 
-  end(intensity, exposure, highContrast) {
+  end(intensity: number, exposure: number, highContrast: boolean): void {
     const gl = this.gl;
     gl.activeTexture(gl.TEXTURE0);
 
@@ -402,10 +412,12 @@ class Bloom {
       const targetTexture = this.mipmapTextures[level];
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.mipmapFbos[level]);
       gl.viewport(1, 1, targetTexture.width - 2, targetTexture.height - 2);
-      gl.bindTexture(gl.TEXTURE_2D, this.mipmapTextures[level - 1]);
-      gl.uniform2f(program.sourceDeltaUvUniform, 
-          1.0 / this.mipmapTextures[level - 1].width,
-          1.0 / this.mipmapTextures[level - 1].height);
+      gl.bindTexture(gl.TEXTURE_2D, this.mipmapTextures[level - 1].texture);
+      if (program.sourceDeltaUvUniform) {
+        gl.uniform2f(program.sourceDeltaUvUniform, 
+            1.0 / this.mipmapTextures[level - 1].width,
+            1.0 / this.mipmapTextures[level - 1].height);
+      }
       this.drawQuad(program);
     }
 
@@ -413,12 +425,15 @@ class Bloom {
     gl.useProgram(program);
     for (let level = 1; level < this.numLevels; ++level) {
       const targetTexture = this.filterTextures[level];
+      if (!targetTexture) continue;
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.filterFbos[level]);
       gl.viewport(0, 0, targetTexture.width, targetTexture.height);
-      gl.bindTexture(gl.TEXTURE_2D, this.mipmapTextures[level]);
-      gl.uniform2f(program.sourceDeltaUvUniform, 
-          1.0 / this.mipmapTextures[level].width,
-          1.0 / this.mipmapTextures[level].height);
+      gl.bindTexture(gl.TEXTURE_2D, this.mipmapTextures[level].texture);
+      if (program.sourceDeltaUvUniform) {
+        gl.uniform2f(program.sourceDeltaUvUniform, 
+            1.0 / this.mipmapTextures[level].width,
+            1.0 / this.mipmapTextures[level].height);
+      }
       for (let i = 0; i < 25; ++i) {
         gl.uniform3f(gl.getUniformLocation(program, `source_samples_uvw[${i}]`),
             this.bloomFilters[level][i][0],
@@ -436,12 +451,18 @@ class Bloom {
     gl.useProgram(program);
     for (let level = this.numLevels - 2; level >= 1; --level) {
       const targetTexture = this.filterTextures[level];
+      if (!targetTexture) continue;
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.filterFbos[level]);
       gl.viewport(0, 0, targetTexture.width, targetTexture.height);
-      gl.bindTexture(gl.TEXTURE_2D, this.filterTextures[level + 1]);
-      gl.uniform2f(program.sourceDeltaUvUniform, 
-          1.0 / this.filterTextures[level + 1].width,
-          1.0 / this.filterTextures[level + 1].height);
+      const filterTexNext = this.filterTextures[level + 1];
+      if (filterTexNext) {
+        gl.bindTexture(gl.TEXTURE_2D, filterTexNext.texture);
+        if (program.sourceDeltaUvUniform) {
+          gl.uniform2f(program.sourceDeltaUvUniform, 
+              1.0 / filterTexNext.width,
+              1.0 / filterTexNext.height);
+        }
+      }
       this.drawQuad(program);
     }
     gl.disable(gl.BLEND);
@@ -452,15 +473,22 @@ class Bloom {
     program = this.renderProgram;
     gl.useProgram(program);
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.mipmapTextures[0]);
+    gl.bindTexture(gl.TEXTURE_2D, this.mipmapTextures[0].texture);
     gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, this.filterTextures[1]);
-    gl.uniform2f(program.sourceDeltaUvUniform, 
-        1.0 / this.mipmapTextures[0].width, 
-        1.0 / this.mipmapTextures[0].height);
-    gl.uniform2f(program.bloomDeltaUvUniform, 
-        1.0 / this.filterTextures[1].width,
-        1.0 / this.filterTextures[1].height);
+    const filterTex1 = this.filterTextures[1];
+    if (filterTex1) {
+      gl.bindTexture(gl.TEXTURE_2D, filterTex1.texture);
+    }
+    if (program.sourceDeltaUvUniform) {
+      gl.uniform2f(program.sourceDeltaUvUniform, 
+          1.0 / this.mipmapTextures[0].width, 
+          1.0 / this.mipmapTextures[0].height);
+    }
+    if (program.bloomDeltaUvUniform && filterTex1) {
+      gl.uniform2f(program.bloomDeltaUvUniform, 
+          1.0 / filterTex1.width,
+          1.0 / filterTex1.height);
+    }
     if (this.numLevels > 0) {
       for (let i = 0; i < 25; ++i) {
         gl.uniform3f(gl.getUniformLocation(program, `source_samples_uvw[${i}]`),
@@ -469,26 +497,24 @@ class Bloom {
             this.bloomFilters[0][i][2]);
       }
     }
-    gl.uniform1f(program.intensityUniform, intensity);
-    gl.uniform1f(program.exposureUniform, exposure);
-    gl.uniform1i(program.highContrastUniform, highContrast ? 1 : 0);
+    if (program.intensityUniform) gl.uniform1f(program.intensityUniform, intensity);
+    if (program.exposureUniform) gl.uniform1f(program.exposureUniform, exposure);
+    if (program.highContrastUniform) gl.uniform1i(program.highContrastUniform, highContrast ? 1 : 0);
     this.drawQuad(program);
   }
 
-  drawQuad(program) {
+  private drawQuad(program: WebGLProgram): void {
     const gl = this.gl;
     const vertexAttrib = gl.getAttribLocation(program, 'vertex');
     gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
     gl.vertexAttribPointer(
         vertexAttrib,
-        /*numComponents=*/ 2,
-        /*type=*/ this.gl.FLOAT,
-        /*normalize=*/ false,
-        /*stride=*/ 0,
-        /*offset=*/ 0);
+        2,
+        gl.FLOAT,
+        false,
+        0,
+        0);
     gl.enableVertexAttribArray(vertexAttrib);
-    gl.drawArrays(gl.TRIANGLE_STRIP, /*offset=*/ 0, /*vertexCount=*/ 4);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 }
-window.BlackHoleShaderDemoApp.Bloom = Bloom;
-

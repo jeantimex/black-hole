@@ -1,10 +1,21 @@
-
-(function(model) {
+import { Model, ValueListener } from './model';
 
 class Context3d {
-  constructor(canvas) {
-    this.canvas = canvas;
-    this.context = canvas.getContext('2d');
+  private context: CanvasRenderingContext2D;
+  private ex: number[];
+  private ey: number[];
+  private ez: number[];
+  private camera: number[];
+  private width: number;
+  private height: number;
+  private focal: number;
+  private nearPlane: number;
+  private lastCameraPt: number[];
+
+  constructor(canvas: HTMLCanvasElement) {
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error("Could not get 2D context");
+    this.context = ctx;
 
     const r = 120;
     const theta = 70 * Math.PI / 180;
@@ -27,15 +38,15 @@ class Context3d {
     this.lastCameraPt = [];
   }
 
-  moveTo(x, y, z) {
+  moveTo(x: number, y: number, z: number): void {
     this.pathTo(x, y, z, true);
   }
 
-  lineTo(x, y, z) {
+  lineTo(x: number, y: number, z: number): void {
     this.pathTo(x, y, z, false);
   }
 
-  pathTo(x, y, z, move) {
+  private pathTo(x: number, y: number, z: number, move: boolean): void {
     const cameraPt = this.toCameraPt([x, y, z]);
     const screenPt = this.toScreenPt(cameraPt);
     if (move) {
@@ -53,7 +64,7 @@ class Context3d {
     this.lastCameraPt = cameraPt;
   }
 
-  clipTo(cameraPt, move) {
+  private clipTo(cameraPt: number[], move: boolean): void {
     const t = (this.nearPlane - this.lastCameraPt[2]) / 
         (cameraPt[2] - this.lastCameraPt[2]);
     const nearPlanePt = [
@@ -68,7 +79,7 @@ class Context3d {
     }
   }
 
-  toCameraPt(worldPt) {
+  toCameraPt(worldPt: number[]): number[] {
     const q = [worldPt[0] - this.camera[0],
                worldPt[1] - this.camera[1],
                worldPt[2] - this.camera[2]];
@@ -77,44 +88,71 @@ class Context3d {
             q[0] * this.ez[0] + q[1] * this.ez[1] + q[2] * this.ez[2]];
   }
 
-  toScreenPt(cameraPt) {
+  toScreenPt(cameraPt: number[]): number[] {
     return [this.width * 0.5 - 0.5 * this.focal * cameraPt[0] / cameraPt[2],
             this.height * 0.5 + 0.5 * this.focal * cameraPt[1] / cameraPt[2]];
   }
 }
 
-const safeSqrt = function(x) {
+const safeSqrt = function(x: number): number {
   return Math.sqrt(Math.max(x, 0));
 };
 
-class OrbitPanel {
-  constructor(rootElement, model) {
+export class OrbitPanel implements ValueListener {
+  private rootElement: HTMLElement;
+  private model: Model;
+  private blackHoleRadius: HTMLElement;
+  private radius: HTMLElement;
+  private speed: HTMLElement;
+  private gforce: HTMLElement;
+  private localTime: HTMLElement;
+  private globalTime: HTMLElement;
+  private timeDilation: HTMLElement;
+  private dot: HTMLElement;
+  private frustum: HTMLElement[];
+  private numberFormat: Intl.NumberFormat;
+  private lastStartRadius: number | undefined;
+  private lastStartDirection: number | undefined;
+  private lastStartSpeed: number | undefined;
+  private lastOrbitInclination: number | undefined;
+  private canvas: HTMLCanvasElement;
+  private context: CanvasRenderingContext2D;
+  private context3d: Context3d;
+
+  constructor(rootElement: HTMLElement, model: Model) {
     this.rootElement = rootElement;
     this.model = model;
     this.model.addListener(this);
 
-    this.blackHoleRadius = rootElement.querySelector('#op_black_hole_radius');
-    this.radius = rootElement.querySelector('#op_radius');
-    this.speed = rootElement.querySelector('#op_speed');
-    this.gforce = rootElement.querySelector('#op_gforce');
-    this.localTime = rootElement.querySelector('#op_local_time');
-    this.globalTime = rootElement.querySelector('#op_global_time');
-    this.timeDilation = rootElement.querySelector('#op_time_dilation');
-    this.dot = rootElement.querySelector('#op_dot');
+    const selectOrThrow = (selector: string): HTMLElement => {
+      const el = rootElement.querySelector(selector);
+      if (!el) throw new Error(`Element ${selector} not found`);
+      return el as HTMLElement;
+    };
+
+    this.blackHoleRadius = selectOrThrow('#op_black_hole_radius');
+    this.radius = selectOrThrow('#op_radius');
+    this.speed = selectOrThrow('#op_speed');
+    this.gforce = selectOrThrow('#op_gforce');
+    this.localTime = selectOrThrow('#op_local_time');
+    this.globalTime = selectOrThrow('#op_global_time');
+    this.timeDilation = selectOrThrow('#op_time_dilation');
+    this.dot = selectOrThrow('#op_dot');
     this.frustum = [];
     for (let i = 0; i <= 8; ++i) {
-      this.frustum.push(rootElement.querySelector(`#op_frustum${i}`));
+      this.frustum.push(selectOrThrow(`#op_frustum${i}`));
     }
-    this.numberFormat = 
-        new Intl.NumberFormat('en-US', {maximumFractionDigits : 1});
+    this.numberFormat = new Intl.NumberFormat('en-US', {maximumFractionDigits : 1});
 
     this.lastStartRadius = undefined;
     this.lastStartDirection = undefined;
     this.lastStartSpeed = undefined;
     this.lastOrbitInclination = undefined;
 
-    this.canvas = rootElement.querySelector('#canvas');
-    this.context = this.canvas.getContext('2d');
+    this.canvas = selectOrThrow('#canvas') as HTMLCanvasElement;
+    const ctx = this.canvas.getContext('2d');
+    if (!ctx) throw new Error("Could not get 2D context");
+    this.context = ctx;
     this.context3d = new Context3d(this.canvas);
 
     this.onSettingsChange();
@@ -124,7 +162,7 @@ class OrbitPanel {
     document.body.addEventListener('keypress', (e) => this.onKeyPress(e));
   }
 
-  onSettingsChange() {
+  onSettingsChange(): void {
     if (this.lastStartRadius == this.model.startRadius.getValue() &&
         this.lastStartDirection == this.model.startDirection.getValue() &&
         this.lastStartSpeed == this.model.startSpeed.getValue() &&
@@ -146,7 +184,7 @@ class OrbitPanel {
     this.drawOrbit();
   }
 
-  onOrbitChange() {
+  onOrbitChange(): void {
     const model = this.model;
     const radiusMeters = model.r * model.blackHoleRadiusMeters;
     this.blackHoleRadius.innerText =
@@ -167,7 +205,7 @@ class OrbitPanel {
     this.drawDotAndFrustum();
   }
 
-  drawDotAndFrustum() {
+  drawDotAndFrustum(): void {
     const model = this.model;
     const context3d = this.context3d;
     const ci = Math.cos(model.orbitInclination.getValue());
@@ -186,7 +224,7 @@ class OrbitPanel {
     const eW = model.eW;
     const eH = model.eH;
     const eD = model.eD;
-    const getFrustumScreenPt = function(i, j, l) {
+    const getFrustumScreenPt = function(i: number, j: number, l: number): number[] {
       const w = i * aspectRatio;
       const h = j;
       const d = -focalLength;
@@ -217,7 +255,7 @@ class OrbitPanel {
     this.setLine(this.frustum[8], screenPt, frustumScreenPts[4]);
   }
 
-  setLine(element, p, q) {
+  setLine(element: HTMLElement, p: number[], q: number[]): void {
     const dx = q[0] - p[0];
     const dy = q[1] - p[1];
     const scale = Math.sqrt(dx * dx + dy * dy);
@@ -231,7 +269,7 @@ class OrbitPanel {
     element.style.transform = `matrix(${a}, ${b}, ${c}, ${d}, ${tx}, ${ty})`;
   }
 
-  drawGrid(halfSize, steps, orbitInclination) {
+  drawGrid(halfSize: number, steps: number, orbitInclination: number): void {
     const ci = Math.cos(orbitInclination);
     const si = Math.sin(orbitInclination);
     for (let i = 0; i <= steps; ++i) {
@@ -243,7 +281,7 @@ class OrbitPanel {
     }
   }
 
-  drawAxes() {
+  drawAxes(): void {
     const context = this.context;
     const context3d = this.context3d;
     context.strokeStyle = '#F00';
@@ -263,7 +301,7 @@ class OrbitPanel {
     context.stroke(); 
   }
 
-  drawDisc() {
+  drawDisc(): void {
     const context = this.context;
     context.strokeStyle = '#FF0';
     context.lineWidth = 2;
@@ -274,7 +312,7 @@ class OrbitPanel {
     context.lineWidth = 1;
   }
 
-  drawCircle(radius) {
+  drawCircle(radius: number): void {
     this.context3d.moveTo(radius, 0, 0);
     for (let i = 1; i <= 64; ++i) {
       const a = 2 * Math.PI * i / 64;
@@ -282,7 +320,7 @@ class OrbitPanel {
     }
   }
 
-  drawOrbit() {
+  drawOrbit(): void {
     const context = this.context;
     context.lineWidth = 2;
     context.strokeStyle = '#FFF';
@@ -305,9 +343,6 @@ class OrbitPanel {
     this.context3d.moveTo(ci * r, 0, si * r);
     while (Math.abs(phi) < 6 * Math.PI) {
       u = 1 / r;
-      // Adaptive integration step size, chosen such that the proper distance
-      // ds^2 = dr^2 / (1 - u) + r^2 dPhi^2 = dTau^2 (e^2 / (1 - u) - 1) is
-      // constant at each step.
       const dTau = 1e-2 / Math.sqrt(e * e / (1 - u) - 0.99);
       const d2rOverDtau2 = u * u * (l * l * u * (2 - 3 * u) - 1) / 2;
       drOverDtau += d2rOverDtau2 * dTau;
@@ -337,20 +372,13 @@ class OrbitPanel {
     context.shadowBlur = 0;
   }
 
-  onKeyPress(event) {
+  onKeyPress(event: KeyboardEvent): void {
     if (event.key == ' ') {
       this.toggleVisibility();
     }
   }
 
-  toggleVisibility() {
+  toggleVisibility(): void {
     this.rootElement.classList.toggle('op-hidden');
   }
 }
-
-window.addEventListener('DOMContentLoaded', () => {
-  if (window.BlackHoleShaderDemoApp.orbitPanelInitialized) return;
-  window.BlackHoleShaderDemoApp.orbitPanelInitialized = true;
-  new OrbitPanel(document.body.querySelector('#orbit_panel'), model);
-});
-})(BlackHoleShaderDemoApp.model);

@@ -1,20 +1,28 @@
+import { Model, BooleanValue, QuantizedValue, ValueListener, State } from './model';
 
-(function(model, State){
+interface Param {
+  read(searchParams: URLSearchParams): void;
+  write(searchParams: URLSearchParams): void;
+}
 
-class BoolParam {
-  constructor(name, model) {
+class BoolParam implements Param {
+  private name: string;
+  private model: BooleanValue;
+
+  constructor(name: string, model: BooleanValue) {
     this.name = name;
     this.model = model;
   }
-  read(searchParams) {
+  read(searchParams: URLSearchParams): void {
     const value = searchParams.get(this.name);
+    if (value === null) return;
     if (this.model.getDefaultValue()) {
       this.model.setValue(value != '0');
     } else {
       this.model.setValue(value == '1');
     }
   }
-  write(searchParams) {
+  write(searchParams: URLSearchParams): void {
     if (this.model.getValue() == this.model.getDefaultValue()) {
       searchParams.delete(this.name);
     } else {
@@ -23,30 +31,39 @@ class BoolParam {
   }
 }
 
-class IntParam {
-  constructor(name, model) {
+class IntParam implements Param {
+  private name: string;
+  private model: QuantizedValue;
+
+  constructor(name: string, model: QuantizedValue) {
     this.name = name;
     this.model = model;
   }
-  read(searchParams) {
-    const index = parseInt(searchParams.get(this.name));
+  read(searchParams: URLSearchParams): void {
+    const valStr = searchParams.get(this.name);
+    if (valStr === null) return;
+    const index = parseInt(valStr);
     if (index >= 0) {
       this.model.setIndex(index);
     }
   }
-  write(searchParams) {
+  write(searchParams: URLSearchParams): void {
     if (this.model.getIndex() == this.model.getDefaultIndex()) {
       searchParams.delete(this.name);
     } else {
-      searchParams.set(this.name, this.model.getIndex());
+      searchParams.set(this.name, this.model.getIndex().toString());
     }
   }
 }
 
-class UrlParams {
-  constructor(model) {
-    this.model = model;
+export class UrlParams implements ValueListener {
+  private model: Model;
+  private params: Param[];
+  private lastState: string | undefined;
+  private timeout: ReturnType<typeof setTimeout> | null = null;
 
+  constructor(model: Model) {
+    this.model = model;
     this.params = [];
     this.params.push(new IntParam('ct', model.cameraTarget));
     this.params.push(new IntParam('cy', model.cameraYaw));
@@ -72,66 +89,67 @@ class UrlParams {
     this.params.push(new IntParam('sfp', model.starsPitch));
     this.params.push(new IntParam('sfr', model.starsRoll));
     this.params.push(new BoolParam('sfe', model.stars));
-    this.lastState = undefined;
 
-    this.timeout = null;
+    this.lastState = undefined;
     this.readUrlParams();
     this.model.addListener(this);
   }
 
-  onSettingsChange() {
+  onSettingsChange(): void {
     if (this.timeout) {
       clearTimeout(this.timeout);
     }
     this.timeout = setTimeout(() => this.writeUrlParams(), 500);
   }
 
-  onOrbitChange() {
+  onOrbitChange(): void {
     if (this.model.state == this.lastState) {
       return;
     }
     this.lastState = this.model.state;
-    if (this.model.state != State.PLAYED) {
+    if (this.model.state != State.PLAYING) {
       this.writeUrlParams();
     }
   }
 
-  readUrlParams() {
+  readUrlParams(): void {
     const searchParams = new URLSearchParams(window.location.search);
     for (let param of this.params) {
       param.read(searchParams);
     }
-    const r = parseFloat(searchParams.get('r'));
-    const dr = parseFloat(searchParams.get('dr'));
-    const phi = parseFloat(searchParams.get('phi'));
-    if (!isNaN(r) && !isNaN(dr) && !isNaN(phi) && r > 1) {
-      this.model.r = r;
-      this.model.drOverDtau = dr;
-      this.model.phi = phi;
-      this.model.state = State.PAUSED;
+    const rVal = searchParams.get('r');
+    const drVal = searchParams.get('dr');
+    const phiVal = searchParams.get('phi');
+    if (rVal !== null && drVal !== null && phiVal !== null) {
+      const r = parseFloat(rVal);
+      const dr = parseFloat(drVal);
+      const phi = parseFloat(phiVal);
+      if (!isNaN(r) && !isNaN(dr) && !isNaN(phi) && r > 1) {
+        this.model.r = r;
+        this.model.drOverDtau = dr;
+        this.model.phi = phi;
+        this.model.state = State.PAUSED;
+      }
     }
   }
 
-  writeUrlParams() {
+  writeUrlParams(): void {
     const url = new URL(window.location.toString());
     const searchParams = new URLSearchParams(url.search);
     for (let param of this.params) {
       param.write(searchParams);
     }
-    if (model.state == State.PAUSED) {
-      searchParams.set('r', this.model.r);
-      searchParams.set('dr', this.model.drOverDtau);
-      searchParams.set('phi', this.model.phi);
+    if (this.model.state == State.PAUSED) {
+      searchParams.set('r', this.model.r.toString());
+      searchParams.set('dr', this.model.drOverDtau.toString());
+      searchParams.set('phi', this.model.phi.toString());
     } else {
       searchParams.delete('r');
       searchParams.delete('dr');
       searchParams.delete('phi');
     }
     url.search = searchParams.toString();
-    window.history.replaceState(null, null, url.toString());
+    window.history.replaceState(null, '', url.toString());
     this.timeout = null;
   }
 }
-
-window.addEventListener('DOMContentLoaded', () => new UrlParams(model));
-})(BlackHoleShaderDemoApp.model, BlackHoleShaderDemoApp.State);

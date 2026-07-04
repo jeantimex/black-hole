@@ -1,13 +1,10 @@
-(function() {
-
 const MAX_STAR_TEXTURE_LOD = 6;
 
-const loadTextureData = function(textureDataUrl, callback) {
+const loadTextureData = function(textureDataUrl: string, callback: (data: Float32Array) => void): void {
   const xhr = new XMLHttpRequest();
   xhr.open('GET', textureDataUrl);
   xhr.responseType = 'arraybuffer';
-  xhr.onload = (event) => {
-
+  xhr.onload = () => {
     if (xhr.status !== 200) {
       console.error("XHR Failed to load Float data:", textureDataUrl, "status:", xhr.status);
       return;
@@ -29,13 +26,11 @@ const loadTextureData = function(textureDataUrl, callback) {
   xhr.send();
 };
 
-const loadIntTextureData = function(textureDataUrl, callback) {
-  const isTile = textureDataUrl.includes("gaia_sky_map");
+const loadIntTextureData = function(textureDataUrl: string, callback: (data: Uint32Array) => void): void {
   const xhr = new XMLHttpRequest();
   xhr.open('GET', textureDataUrl);
   xhr.responseType = 'arraybuffer';
-  xhr.onload = (event) => {
-
+  xhr.onload = () => {
     if (xhr.status !== 200) {
       console.error("XHR Failed to load Int data:", textureDataUrl, "status:", xhr.status);
       return;
@@ -57,7 +52,17 @@ const loadIntTextureData = function(textureDataUrl, callback) {
   xhr.send();
 };
 
-const writeTextureWithPadding = function(device, texture, mipLevel, origin, srcTypedArray, width, height, depth, bytesPerPixel) {
+const writeTextureWithPadding = function(
+  device: GPUDevice,
+  texture: GPUTexture,
+  mipLevel: number,
+  origin: GPUOrigin3D,
+  srcTypedArray: Float32Array | Uint32Array | Uint8Array,
+  width: number,
+  height: number,
+  depth: number,
+  bytesPerPixel: number
+): void {
   const actualBytesPerRow = width * bytesPerPixel;
   if (actualBytesPerRow % 256 === 0 || height <= 1) {
     device.queue.writeTexture(
@@ -71,7 +76,7 @@ const writeTextureWithPadding = function(device, texture, mipLevel, origin, srcT
     const alignedWordsPerRow = alignedBytesPerRow / srcTypedArray.BYTES_PER_ELEMENT;
     const srcWordsPerRow = actualBytesPerRow / srcTypedArray.BYTES_PER_ELEMENT;
     const paddedSize = alignedWordsPerRow * height * depth;
-    const paddedData = new srcTypedArray.constructor(paddedSize);
+    const paddedData = new (srcTypedArray.constructor as any)(paddedSize);
     for (let d = 0; d < depth; ++d) {
       for (let y = 0; y < height; ++y) {
         const srcOffset = d * srcWordsPerRow * height + y * srcWordsPerRow;
@@ -91,29 +96,49 @@ const writeTextureWithPadding = function(device, texture, mipLevel, origin, srcT
   }
 };
 
-class TextureManager {
-  constructor(rootElement, device) {
-    this.loadingPanel = rootElement.querySelector('#cv_loading_panel');
-    this.loadingBar = rootElement.querySelector('#cv_loading_bar');
+interface StarTile {
+  l: number;
+  ti: number;
+  tj: number;
+  i: number;
+  url: string;
+}
+
+export class TextureManager {
+  private loadingPanel: HTMLElement;
+  private loadingBar: HTMLElement;
+  private device: GPUDevice;
+
+  rayDeflectionTexture: GPUTexture | null = null;
+  rayInverseRadiusTexture: GPUTexture | null = null;
+  blackbodyTexture: GPUTexture | null = null;
+  dopplerTexture: GPUTexture | null = null;
+  gridTexture: GPUTexture | null = null;
+  galaxyTexture: GPUTexture | null = null;
+  starTexture: GPUTexture | null = null;
+  starTexture2: GPUTexture | null = null;
+  noiseTexture: GPUTexture | null = null;
+
+  linearSampler: GPUSampler;
+  nearestSampler: GPUSampler;
+
+  private tilesQueue: StarTile[] = [];
+  private numTilesLoaded = 0;
+  private numTilesLoadedPerLevel = [0, 0, 0, 0, 0];
+  private numPendingRequests = 0;
+
+  constructor(rootElement: HTMLElement, device: GPUDevice) {
+    const panel = rootElement.querySelector('#cv_loading_panel');
+    const bar = rootElement.querySelector('#cv_loading_bar');
+    if (!panel) throw new Error("cv_loading_panel not found");
+    if (!bar) throw new Error("cv_loading_bar not found");
+
+    this.loadingPanel = panel as HTMLElement;
+    this.loadingBar = bar as HTMLElement;
     this.device = device;
 
-    this.rayDeflectionTexture = null;
-    this.rayInverseRadiusTexture = null;
-    this.blackbodyTexture = null;
-    this.dopplerTexture = null;
-    this.gridTexture = null;
-    this.galaxyTexture = null;
-    this.starTexture = null;
-    this.starTexture2 = null;
-    this.noiseTexture = null;
-
-    this.tilesQueue = [];
-    this.numTilesLoaded = 0;
-    this.numTilesLoadedPerLevel = [0, 0, 0, 0, 0];
-    this.numPendingRequests = 0;
-
-    // Create standard samplers
     this.linearSampler = device.createSampler({
+      label: 'TextureManagerLinearSampler',
       addressModeU: 'clamp-to-edge',
       addressModeV: 'clamp-to-edge',
       minFilter: 'linear',
@@ -121,6 +146,7 @@ class TextureManager {
       mipmapFilter: 'linear'
     });
     this.nearestSampler = device.createSampler({
+      label: 'TextureManagerNearestSampler',
       addressModeU: 'clamp-to-edge',
       addressModeV: 'clamp-to-edge',
       minFilter: 'nearest',
@@ -134,7 +160,7 @@ class TextureManager {
     document.body.addEventListener('keypress', (e) => this.onKeyPress(e));
   }
 
-  loadTextures() {
+  private loadTextures(): void {
     const device = this.device;
 
     loadTextureData('deflection.dat', (data) => {
@@ -184,7 +210,7 @@ class TextureManager {
         rgbaData[i * 4 + 3] = 1.0;
       }
       device.queue.writeTexture(
-        { texture: this.dopplerTexture },
+        { texture: this.dopplerTexture! },
         rgbaData,
         { bytesPerRow: 64 * 16, rowsPerImage: 32 },
         [64, 32, 64]
@@ -205,7 +231,7 @@ class TextureManager {
         rgbaData[i * 4 + 3] = 1.0;
       }
       device.queue.writeTexture(
-        { texture: this.blackbodyTexture },
+        { texture: this.blackbodyTexture! },
         rgbaData,
         { bytesPerRow: 128 * 16, rowsPerImage: 1 },
         [128, 1, 1]
@@ -219,7 +245,6 @@ class TextureManager {
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
     });
 
-    // Procedural grid mipmap generation
     for (let level = 0; level < 10; ++level) {
       const size = 512 >> level;
       const levelData = new Uint8Array(size * size);
@@ -247,7 +272,7 @@ class TextureManager {
     }
   }
 
-  loadStarTextures() {
+  private loadStarTextures(): void {
     const device = this.device;
 
     this.galaxyTexture = device.createTexture({
@@ -291,14 +316,16 @@ class TextureManager {
     this.loadStarTextureTiles();
   }
 
-  loadStarTextureTiles() {
+  private loadStarTextureTiles(): void {
     while (this.tilesQueue.length > 0 && this.numPendingRequests < 6) {
       const tile = this.tilesQueue.pop();
-      this.loadStarTextureTile(tile.l, tile.ti, tile.tj, tile.i, tile.url);
+      if (tile) {
+        this.loadStarTextureTile(tile.l, tile.ti, tile.tj, tile.i, tile.url);
+      }
     }
   }
 
-  loadStarTextureTile(l, ti, tj, i, url) {
+  private loadStarTextureTile(l: number, ti: number, tj: number, i: number, url: string): void {
     const device = this.device;
     const size = 2048 / (1 << l);
     loadIntTextureData(url, (data) => {
@@ -309,7 +336,7 @@ class TextureManager {
         // Upload to galaxyTexture
         writeTextureWithPadding(
           device,
-          this.galaxyTexture,
+          this.galaxyTexture!,
           level,
           { x: ti * tileSize, y: tj * tileSize, z: i },
           data.subarray(start, start + tileSize * tileSize),
@@ -324,7 +351,7 @@ class TextureManager {
         if (level <= MAX_STAR_TEXTURE_LOD) {
           writeTextureWithPadding(
             device,
-            this.starTexture,
+            this.starTexture!,
             level,
             { x: ti * tileSize, y: tj * tileSize, z: i },
             data.subarray(start, start + tileSize * tileSize),
@@ -336,7 +363,7 @@ class TextureManager {
         } else {
           writeTextureWithPadding(
             device,
-            this.starTexture2,
+            this.starTexture2!,
             level - (MAX_STAR_TEXTURE_LOD + 1),
             { x: ti * tileSize, y: tj * tileSize, z: i },
             data.subarray(start, start + tileSize * tileSize),
@@ -361,14 +388,14 @@ class TextureManager {
     this.numPendingRequests += 1;
   }
 
-  loadNoiseTexture(textureUrl) {
+  private loadNoiseTexture(textureUrl: string): void {
     const device = this.device;
     const image = new Image();
     image.addEventListener('load', async () => {
       const imageBitmap = await createImageBitmap(image);
       this.noiseTexture = device.createTexture({
         size: [imageBitmap.width, imageBitmap.height, 1],
-        format: 'rgba8unorm', // WebGPU standard format for images
+        format: 'rgba8unorm',
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
       });
       device.queue.copyExternalImageToTexture(
@@ -380,14 +407,14 @@ class TextureManager {
     image.src = textureUrl;
   }
 
-  updateLoadingBar() {
+  private updateLoadingBar(): void {
     this.loadingBar.style.width = `${this.numTilesLoaded / 516 * 100}%`;
     if (this.numTilesLoaded == 516) {
-      this.loadingPanel.classList.toggle('cv-loaded');
+      this.loadingPanel.classList.toggle('cv-loaded', true);
     }
   }
 
-  getMinLoadedStarTextureLod() {
+  getMinLoadedStarTextureLod(): number {
     if (this.numTilesLoadedPerLevel[0] == 384) {
       return 0.0;
     } else if (this.numTilesLoadedPerLevel[1] == 96) {
@@ -400,12 +427,9 @@ class TextureManager {
     return 4.0;
   }
 
-  onKeyPress(event) {
+  onKeyPress(event: KeyboardEvent): void {
     if (event.key == ' ') {
       this.loadingPanel.classList.toggle('cv-hidden');
     }
   }
 }
-
-BlackHoleShaderDemoApp.TextureManager = TextureManager;
-})();
