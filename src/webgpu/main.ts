@@ -2,6 +2,8 @@ import './style.css';
 
 // Import raw WGSL shaders
 import blackHoleShader from './shaders/black_hole_shader.wgsl?raw';
+import rocketShader from './shaders/rocket_shader.wgsl?raw';
+import exhaustShader from './shaders/exhaust_shader.wgsl?raw';
 
 // Function to inject shaders dynamically into the DOM
 function injectShader(id: string, type: string, source: string) {
@@ -15,8 +17,10 @@ function injectShader(id: string, type: string, source: string) {
   element.textContent = source;
 }
 
-// Inject WGSL shader
+// Inject WGSL shaders
 injectShader('black_hole_shader', 'text/wgsl', blackHoleShader);
+injectShader('rocket_shader', 'text/wgsl', rocketShader);
+injectShader('exhaust_shader', 'text/wgsl', exhaustShader);
 
 // Initialize namespace
 (window as any).BlackHoleShaderDemoApp = (window as any).BlackHoleShaderDemoApp || {};

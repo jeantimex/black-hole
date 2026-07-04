@@ -3,12 +3,11 @@
 const MAX_STAR_TEXTURE_LOD = 6;
 
 const loadTextureData = function(textureDataUrl, callback) {
-  console.log("XHR Requesting Float data:", textureDataUrl);
   const xhr = new XMLHttpRequest();
   xhr.open('GET', textureDataUrl);
   xhr.responseType = 'arraybuffer';
   xhr.onload = (event) => {
-    console.log("XHR Loaded Float data:", textureDataUrl, "status:", xhr.status, "bytes:", xhr.response ? xhr.response.byteLength : 0);
+
     if (xhr.status !== 200) {
       console.error("XHR Failed to load Float data:", textureDataUrl, "status:", xhr.status);
       return;
@@ -32,16 +31,11 @@ const loadTextureData = function(textureDataUrl, callback) {
 
 const loadIntTextureData = function(textureDataUrl, callback) {
   const isTile = textureDataUrl.includes("gaia_sky_map");
-  if (!isTile) {
-    console.log("XHR Requesting Int data:", textureDataUrl);
-  }
   const xhr = new XMLHttpRequest();
   xhr.open('GET', textureDataUrl);
   xhr.responseType = 'arraybuffer';
   xhr.onload = (event) => {
-    if (!isTile) {
-      console.log("XHR Loaded Int data:", textureDataUrl, "status:", xhr.status, "bytes:", xhr.response ? xhr.response.byteLength : 0);
-    }
+
     if (xhr.status !== 200) {
       console.error("XHR Failed to load Int data:", textureDataUrl, "status:", xhr.status);
       return;

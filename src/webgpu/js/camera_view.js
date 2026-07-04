@@ -56,7 +56,7 @@ class CameraView {
 
     this.textureManager = new TextureManager(rootElement, this.device);
     this.shaderManager = new ShaderManager(model, this.textureManager, this.device);
-    this.rocketManager = new RocketManager(model, this.device);
+    this.rocketManager = new RocketManager(model, this);
     this.bloom = new Bloom(this.device, this.canvasFormat, this.canvas.width, this.canvas.height);
 
     this.lastTauSeconds = Date.now() / 1000.0;
@@ -130,19 +130,7 @@ class CameraView {
         !tm.starTexture2 ||
         !tm.blackbodyTexture ||
         !tm.dopplerTexture) {
-      if (!this.lastLoggedBindGroupState || Date.now() - this.lastLoggedBindGroupState > 2000) {
-        this.lastLoggedBindGroupState = Date.now();
-        console.log("BindGroup waiting for textures:", {
-          deflection: !!tm.rayDeflectionTexture,
-          inverseRadius: !!tm.rayInverseRadiusTexture,
-          noise: !!tm.noiseTexture,
-          galaxy: !!tm.galaxyTexture,
-          star: !!tm.starTexture,
-          star2: !!tm.starTexture2,
-          blackbody: !!tm.blackbodyTexture,
-          doppler: !!tm.dopplerTexture
-        });
-      }
+      // Waiting for textures to load
       return null;
     }
 
@@ -274,10 +262,7 @@ class CameraView {
 
     this.device.queue.writeBuffer(this.uniformBuffer, 0, data);
 
-    if (!this.firstUniformsLogged) {
-      this.firstUniformsLogged = true;
-      console.log("CameraView: First uniform values:", Array.from(data.slice(0, 60)));
-    }
+    // Uniforms updated
   }
 
   onRender() {
@@ -287,18 +272,13 @@ class CameraView {
 
     const shaderModule = this.shaderManager.getProgram();
     if (!shaderModule) {
-      if (!this.lastLoggedState || Date.now() - this.lastLoggedState > 2000) {
-        this.lastLoggedState = Date.now();
-        console.log("Waiting for textures/shader... deflection:", 
-          !!this.textureManager.rayDeflectionTexture, 
-          "inverseRadius:", !!this.textureManager.rayInverseRadiusTexture);
-      }
+      // Waiting for textures/shader to be ready
       requestAnimationFrame(() => this.onRender());
       return;
     }
 
     if (!this.pipeline) {
-      console.log("CameraView: Creating WebGPU render pipeline...");
+      // Creating WebGPU render pipeline
       this.pipeline = this.device.createRenderPipeline({
         label: 'BlackHoleRenderPipeline',
         layout: this.pipelineLayout,
@@ -315,7 +295,7 @@ class CameraView {
           topology: 'triangle-strip'
         }
       });
-      console.log("CameraView: WebGPU render pipeline created successfully!");
+      // WebGPU render pipeline created successfully
     }
 
     const bindGroup = this.getBindGroup();
@@ -326,7 +306,6 @@ class CameraView {
 
     if (!this.firstFrameRendered) {
       this.firstFrameRendered = true;
-      console.log("CameraView: First frame render call starting! Canvas size:", this.canvas.width, "x", this.canvas.height);
     }
 
     if (this.devicePixelRatio != this.getDevicePixelRatio()) {
@@ -343,6 +322,10 @@ class CameraView {
     // Begin WebGPU Render Pass
     const commandEncoder = this.device.createCommandEncoder();
     const textureView = this.context.getCurrentTexture().createView();
+    
+    if (this.model.rocket.getValue()) {
+      this.rocketManager.renderEnvMap(commandEncoder);
+    }
     
     const targetView = this.bloom.begin();
     
@@ -361,6 +344,31 @@ class CameraView {
     passEncoder.setViewport(1, 1, this.canvas.width, this.canvas.height, 0, 1);
     passEncoder.draw(4, 1, 0, 0); // draw fullscreen quad (4 vertices)
     passEncoder.end();
+
+    // Draw the rocket and its plume if enabled
+    if (this.model.rocket.getValue()) {
+      const rocketPassDescriptor = {
+        colorAttachments: [{
+          view: targetView,
+          loadOp: 'load',
+          storeOp: 'store'
+        }],
+        depthStencilAttachment: {
+          view: this.bloom.depthTexture.createView(),
+          depthClearValue: 1.0,
+          depthLoadOp: 'clear',
+          depthStoreOp: 'discard'
+        }
+      };
+
+      const rocketPass = commandEncoder.beginRenderPass(rocketPassDescriptor);
+      rocketPass.setViewport(1, 1, this.canvas.width, this.canvas.height, 0, 1);
+      this.rocketManager.drawRocket(rocketPass);
+      if (this.model.gForce > 0) {
+        this.rocketManager.drawExhaust(rocketPass, tauSeconds, this.model.gForce);
+      }
+      rocketPass.end();
+    }
 
     // Run bloom downsample, filter, upsample, and composite passes
     this.bloom.end(
