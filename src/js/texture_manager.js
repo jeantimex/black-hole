@@ -1,95 +1,7 @@
 
 (function() {
 
-function packRGB9E5(r, g, b) {
-  const max_c = Math.max(r, g, b);
-  if (max_c < 1e-5) return 0;
-  let exp = Math.floor(Math.log2(max_c)) + 1;
-  const biased_exp = Math.min(Math.max(exp + 15, 0), 31);
-  const scale = Math.pow(2, biased_exp - 15 - 9);
-  const rm = Math.min(Math.floor(r / scale), 511);
-  const gm = Math.min(Math.floor(g / scale), 511);
-  const bm = Math.min(Math.floor(b / scale), 511);
-  return rm | (gm << 9) | (bm << 18) | (biased_exp << 27);
-}
 
-function generateStarTileData(l, ti, tj, faceIndex) {
-  const size = 2048 / (1 << l);
-  let totalWords = 0;
-  let current_level = l;
-  let current_level_size = size;
-  
-  while (current_level_size > 0) {
-    const tile_size = Math.min(256, current_level_size);
-    totalWords += 2 * tile_size * tile_size;
-    if (size < 256) {
-      current_level_size /= 2;
-    } else {
-      break;
-    }
-  }
-  
-  const data = new Uint32Array(totalWords);
-  let start = 0;
-  current_level = l;
-  current_level_size = size;
-  
-  while (current_level_size > 0) {
-    const tile_size = Math.min(256, current_level_size);
-    
-    // 1. Generate Galaxy Background (subtle nebula glow)
-    for (let y = 0; y < tile_size; ++y) {
-      for (let x = 0; x < tile_size; ++x) {
-        const gx = (ti * tile_size + x) / (2048 >> current_level) - 0.5;
-        const gy = (tj * tile_size + y) / (2048 >> current_level) - 0.5;
-        const dist = Math.sqrt(gx * gx + gy * gy);
-        const intensity = Math.exp(-dist * 6.0) * 0.12;
-        
-        const r = intensity * 0.4;
-        const g = intensity * 0.3;
-        const b = intensity * 0.7;
-        
-        data[start + x + y * tile_size] = packRGB9E5(r, g, b);
-      }
-    }
-    start += tile_size * tile_size;
-    
-    // 2. Generate Stars
-    for (let y = 0; y < tile_size; ++y) {
-      for (let x = 0; x < tile_size; ++x) {
-        const globalX = ti * tile_size + x;
-        const globalY = tj * tile_size + y;
-        const hash = Math.sin(globalX * 12.9898 + globalY * 78.233 + faceIndex * 37.1 + current_level * 59.3) * 43758.5453;
-        const rand = hash - Math.floor(hash);
-        
-        if (rand > 0.997) { // 0.3% star density
-          const brightness = 0.1 + (rand - 0.997) / 0.003 * 4.0;
-          const colorRand = (rand * 10) - Math.floor(rand * 10);
-          let r = brightness;
-          let g = brightness;
-          let b = brightness;
-          if (colorRand < 0.2) {
-            g *= 0.8; b *= 0.6;
-          } else if (colorRand > 0.8) {
-            r *= 0.8; g *= 0.9;
-          }
-          data[start + x + y * tile_size] = packRGB9E5(r, g, b);
-        } else {
-          data[start + x + y * tile_size] = 0;
-        }
-      }
-    }
-    start += tile_size * tile_size;
-    
-    if (size < 256) {
-      current_level += 1;
-      current_level_size /= 2;
-    } else {
-      break;
-    }
-  }
-  return data;
-}
 
 
 // Max LOD for which the manul texture filtering method DefaultStarColor() in
@@ -298,7 +210,7 @@ class TextureManager {
     gl.texParameterf(gl.TEXTURE_CUBE_MAP, glExt.TEXTURE_MAX_ANISOTROPY_EXT, 
                      gl.getParameter(glExt.MAX_TEXTURE_MAX_ANISOTROPY_EXT));
 
-    const base = '../../gaia_sky_map';
+    const base = 'https://ebruneton.github.io/gaia_sky_map';
     const prefixes = ['pos-x', 'neg-x', 'pos-y', 'neg-y', 'pos-z', 'neg-z'];
     const targets = cubeMapTargets(gl);
     for (let l = 0; l <= 4; ++l) {
@@ -319,58 +231,53 @@ class TextureManager {
     this.loadStarTextureTiles();
   }
 
-
-
   loadStarTextureTiles() {
     while (this.tilesQueue.length > 0 && this.numPendingRequests < 6) {
       const tile = this.tilesQueue.pop();
-      this.numPendingRequests += 1;
-      // Process asynchronously via setTimeout to keep UI responsive
-      setTimeout(() => {
-        this.loadStarTextureTile(
-            tile.l, tile.ti, tile.tj, tile.i, tile.target, tile.url);
-      }, 0);
+      this.loadStarTextureTile(
+          tile.l, tile.ti, tile.tj, tile.i, tile.target, tile.url);
     }
   }
 
   loadStarTextureTile(l, ti, tj, i, target, url) {
     const gl = this.gl;
     const size = 2048 / (1 << l);
-    const data = generateStarTileData(l, ti, tj, i);
-    
-    gl.activeTexture(gl.TEXTURE0);
-    let start = 0;
-    let level = l;
-    let tileSize = Math.min(256, size);
-    while (start < data.length) {
-      gl.bindTexture(gl.TEXTURE_CUBE_MAP, this.galaxyTexture);
-      gl.texSubImage2D(target, level, ti * tileSize, tj * tileSize, 
-          tileSize, tileSize, gl.RGB, gl.UNSIGNED_INT_5_9_9_9_REV, 
-          data.subarray(start, start + tileSize * tileSize), 0);
-      start += tileSize * tileSize;
-      if (level <= MAX_STAR_TEXTURE_LOD) {
-        gl.bindTexture(gl.TEXTURE_CUBE_MAP, this.starTexture);
+    loadIntTextureData(url, (data) => {
+      gl.activeTexture(gl.TEXTURE0);
+      let start = 0;
+      let level = l;
+      let tileSize = Math.min(256, size);
+      while (start < data.length) {
+        gl.bindTexture(gl.TEXTURE_CUBE_MAP, this.galaxyTexture);
         gl.texSubImage2D(target, level, ti * tileSize, tj * tileSize, 
-            tileSize, tileSize, gl.RGB, gl.UNSIGNED_INT_5_9_9_9_REV,
+            tileSize, tileSize, gl.RGB, gl.UNSIGNED_INT_5_9_9_9_REV, 
             data.subarray(start, start + tileSize * tileSize), 0);
-      } else {
-        gl.bindTexture(gl.TEXTURE_CUBE_MAP, this.starTexture2);
-        gl.texSubImage2D(target, level - (MAX_STAR_TEXTURE_LOD + 1), 
-            ti * tileSize, tj * tileSize, tileSize, tileSize,
-            gl.RGB, gl.UNSIGNED_INT_5_9_9_9_REV, 
-            data.subarray(start, start + tileSize * tileSize), 0);
+        start += tileSize * tileSize;
+        if (level <= MAX_STAR_TEXTURE_LOD) {
+          gl.bindTexture(gl.TEXTURE_CUBE_MAP, this.starTexture);
+          gl.texSubImage2D(target, level, ti * tileSize, tj * tileSize, 
+              tileSize, tileSize, gl.RGB, gl.UNSIGNED_INT_5_9_9_9_REV,
+              data.subarray(start, start + tileSize * tileSize), 0);
+        } else {
+          gl.bindTexture(gl.TEXTURE_CUBE_MAP, this.starTexture2);
+          gl.texSubImage2D(target, level - (MAX_STAR_TEXTURE_LOD + 1), 
+              ti * tileSize, tj * tileSize, tileSize, tileSize,
+              gl.RGB, gl.UNSIGNED_INT_5_9_9_9_REV, 
+              data.subarray(start, start + tileSize * tileSize), 0);
+        }
+        start += tileSize * tileSize;
+        level += 1;
+        tileSize /= 2;
       }
-      start += tileSize * tileSize;
-      level += 1;
-      tileSize /= 2;
-    }
-    this.numTilesLoaded += 1;
-    if (l <= MAX_STAR_TEXTURE_LOD) {
-      this.numTilesLoadedPerLevel[l] += 1;
-    }
-    this.numPendingRequests -= 1;
-    this.updateLoadingBar();
-    this.loadStarTextureTiles();
+      this.numTilesLoaded += 1;
+      if (l <= MAX_STAR_TEXTURE_LOD) {
+        this.numTilesLoadedPerLevel[l] += 1;
+      }
+      this.numPendingRequests -= 1;
+      this.updateLoadingBar();
+      this.loadStarTextureTiles();
+    });
+    this.numPendingRequests += 1;
   }
 
   updateLoadingBar() {
