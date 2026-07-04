@@ -119,7 +119,7 @@ input {
   display: none;
 }
 
-#orbit_canvas {
+#canvas {
   display: block;
   width: 400px;
   height: 400px;
