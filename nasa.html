@@ -128,6 +128,14 @@
           <label for="sp_stars">Stars</label>
           <input type="checkbox" id="sp_stars" checked />
         </div>
+        <!-- Hidden target container to satisfy settings_panel.ts lookup -->
+        <span id="sp_target_container" style="display:none;">
+          <button type="button" id="sp_target0"></button>
+          <button type="button" id="sp_target1"></button>
+          <button type="button" id="sp_target2"></button>
+          <button type="button" id="sp_target3"></button>
+          <button type="button" id="sp_target4"></button>
+        </span>
         <!-- Hidden inputs for original settings bindings -->
         <input type="range" id="sp_start_radius" min="2" max="100" value="10" style="display:none;" />
         <input type="range" id="sp_start_direction" min="-180" max="180" value="0" style="display:none;" />
