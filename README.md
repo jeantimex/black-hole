@@ -2,6 +2,8 @@
 
 A real-time, interactive, physically accurate general relativistic ray tracer and spacecraft flight simulator around a Schwarzschild black hole, implemented in both WebGL2 and WebGPU with TypeScript.
 
+https://github.com/user-attachments/assets/8e201151-1a04-48a5-b2a8-595f0314b98f
+
 ---
 
 ## 1. General Relativity & Schwarzschild Geometry
