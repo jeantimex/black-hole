@@ -248,6 +248,8 @@ class CameraView {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
+  if (window.BlackHoleShaderDemoApp.cameraViewInitialized) return;
+  window.BlackHoleShaderDemoApp.cameraViewInitialized = true;
   new CameraView(model, document.body);
 });
 })(BlackHoleShaderDemoApp.model,

@@ -349,6 +349,8 @@ class OrbitPanel {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
+  if (window.BlackHoleShaderDemoApp.orbitPanelInitialized) return;
+  window.BlackHoleShaderDemoApp.orbitPanelInitialized = true;
   new OrbitPanel(document.body.querySelector('#orbit_panel'), model);
 });
 })(BlackHoleShaderDemoApp.model);

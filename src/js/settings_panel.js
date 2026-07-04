@@ -289,6 +289,8 @@ class SettingsPanel {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
+  if (window.BlackHoleShaderDemoApp.settingsPanelInitialized) return;
+  window.BlackHoleShaderDemoApp.settingsPanelInitialized = true;
   new SettingsPanel(document.body.querySelector('#settings_panel'), model);
 });
 })(BlackHoleShaderDemoApp.model, BlackHoleShaderDemoApp.State);
