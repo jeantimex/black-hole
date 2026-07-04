@@ -568,7 +568,7 @@ fn SceneColor(camera_position: vec4<f32>, p: vec3<f32>, k_s: vec4<f32>, e_tau: v
 
 @fragment
 fn frag_main(@location(0) view_dir: vec3<f32>) -> @location(0) vec4<f32> {
-  var color = SceneColor(
+  let color = SceneColor(
     u_uniforms.camera_position,
     u_uniforms.p,
     u_uniforms.k_s,
@@ -578,24 +578,5 @@ fn frag_main(@location(0) view_dir: vec3<f32>) -> @location(0) vec4<f32> {
     u_uniforms.e_d,
     view_dir
   );
-  // Apply exposure
-  color = color * u_uniforms.exposure;
-  color = min(color, vec3<f32>(10.0));
-  
-  // Apply tone mapping (matching WebGL bloom composite!)
-  if (u_uniforms.high_contrast == 1u) {
-    // ACES tone map
-    let A = 2.51;
-    let B = 0.03;
-    let C = 2.43;
-    let D = 0.59;
-    let E = 0.14;
-    color = (color * (A * color + B)) / (color * (C * color + D) + E);
-    color = pow(color, vec3<f32>(1.0 / 2.2));
-  } else {
-    // Exponential tone map
-    color = pow(vec3<f32>(1.0) - exp(-color), vec3<f32>(1.0 / 2.2));
-  }
-  
   return vec4<f32>(color, 1.0);
 }

@@ -57,7 +57,7 @@ class CameraView {
     this.textureManager = new TextureManager(rootElement, this.device);
     this.shaderManager = new ShaderManager(model, this.textureManager, this.device);
     this.rocketManager = new RocketManager(model, this.device);
-    this.bloom = new Bloom(this.device, this.canvas.width, this.canvas.height);
+    this.bloom = new Bloom(this.device, this.canvasFormat, this.canvas.width, this.canvas.height);
 
     this.lastTauSeconds = Date.now() / 1000.0;
     this.lastFrameTime = undefined;
@@ -309,7 +309,7 @@ class CameraView {
         fragment: {
           module: shaderModule,
           entryPoint: 'frag_main',
-          targets: [{ format: this.canvasFormat }]
+          targets: [{ format: 'rgba16float' }]
         },
         primitive: {
           topology: 'triangle-strip'
@@ -344,9 +344,11 @@ class CameraView {
     const commandEncoder = this.device.createCommandEncoder();
     const textureView = this.context.getCurrentTexture().createView();
     
+    const targetView = this.bloom.begin();
+    
     const renderPassDescriptor = {
       colorAttachments: [{
-        view: textureView,
+        view: targetView,
         clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
         loadOp: 'clear',
         storeOp: 'store'
@@ -356,8 +358,18 @@ class CameraView {
     const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
     passEncoder.setPipeline(this.pipeline);
     passEncoder.setBindGroup(0, bindGroup);
+    passEncoder.setViewport(1, 1, this.canvas.width, this.canvas.height, 0, 1);
     passEncoder.draw(4, 1, 0, 0); // draw fullscreen quad (4 vertices)
     passEncoder.end();
+
+    // Run bloom downsample, filter, upsample, and composite passes
+    this.bloom.end(
+      commandEncoder,
+      textureView,
+      this.model.bloom.getValue(),
+      this.model.exposure.getValue(),
+      this.model.highContrast.getValue()
+    );
 
     this.device.queue.submit([commandEncoder.finish()]);
 

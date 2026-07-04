@@ -63,6 +63,40 @@ const loadIntTextureData = function(textureDataUrl, callback) {
   xhr.send();
 };
 
+const writeTextureWithPadding = function(device, texture, mipLevel, origin, srcTypedArray, width, height, depth, bytesPerPixel) {
+  const actualBytesPerRow = width * bytesPerPixel;
+  if (actualBytesPerRow % 256 === 0 || height <= 1) {
+    device.queue.writeTexture(
+      { texture, mipLevel, origin },
+      srcTypedArray,
+      { bytesPerRow: actualBytesPerRow, rowsPerImage: height },
+      [width, height, depth]
+    );
+  } else {
+    const alignedBytesPerRow = Math.ceil(actualBytesPerRow / 256) * 256;
+    const alignedWordsPerRow = alignedBytesPerRow / srcTypedArray.BYTES_PER_ELEMENT;
+    const srcWordsPerRow = actualBytesPerRow / srcTypedArray.BYTES_PER_ELEMENT;
+    const paddedSize = alignedWordsPerRow * height * depth;
+    const paddedData = new srcTypedArray.constructor(paddedSize);
+    for (let d = 0; d < depth; ++d) {
+      for (let y = 0; y < height; ++y) {
+        const srcOffset = d * srcWordsPerRow * height + y * srcWordsPerRow;
+        const dstOffset = d * alignedWordsPerRow * height + y * alignedWordsPerRow;
+        paddedData.set(
+          srcTypedArray.subarray(srcOffset, srcOffset + srcWordsPerRow),
+          dstOffset
+        );
+      }
+    }
+    device.queue.writeTexture(
+      { texture, mipLevel, origin },
+      paddedData,
+      { bytesPerRow: alignedBytesPerRow, rowsPerImage: height },
+      [width, height, depth]
+    );
+  }
+};
+
 class TextureManager {
   constructor(rootElement, device) {
     this.loadingPanel = rootElement.querySelector('#cv_loading_panel');
@@ -204,11 +238,16 @@ class TextureManager {
         }
       }
       for (let face = 0; face < 6; ++face) {
-        device.queue.writeTexture(
-          { texture: this.gridTexture, mipLevel: level, origin: { x: 0, y: 0, z: face } },
+        writeTextureWithPadding(
+          device,
+          this.gridTexture,
+          level,
+          { x: 0, y: 0, z: face },
           levelData,
-          { bytesPerRow: size, rowsPerImage: size },
-          [size, size, 1]
+          size,
+          size,
+          1,
+          1
         );
       }
     }
@@ -274,28 +313,43 @@ class TextureManager {
       let tileSize = Math.min(256, size);
       while (start < data.length) {
         // Upload to galaxyTexture
-        device.queue.writeTexture(
-          { texture: this.galaxyTexture, mipLevel: level, origin: { x: ti * tileSize, y: tj * tileSize, z: i } },
+        writeTextureWithPadding(
+          device,
+          this.galaxyTexture,
+          level,
+          { x: ti * tileSize, y: tj * tileSize, z: i },
           data.subarray(start, start + tileSize * tileSize),
-          { bytesPerRow: tileSize * 4, rowsPerImage: tileSize },
-          [tileSize, tileSize, 1]
+          tileSize,
+          tileSize,
+          1,
+          4
         );
         start += tileSize * tileSize;
 
         // Upload to starTexture / starTexture2
         if (level <= MAX_STAR_TEXTURE_LOD) {
-          device.queue.writeTexture(
-            { texture: this.starTexture, mipLevel: level, origin: { x: ti * tileSize, y: tj * tileSize, z: i } },
+          writeTextureWithPadding(
+            device,
+            this.starTexture,
+            level,
+            { x: ti * tileSize, y: tj * tileSize, z: i },
             data.subarray(start, start + tileSize * tileSize),
-            { bytesPerRow: tileSize * 4, rowsPerImage: tileSize },
-            [tileSize, tileSize, 1]
+            tileSize,
+            tileSize,
+            1,
+            4
           );
         } else {
-          device.queue.writeTexture(
-            { texture: this.starTexture2, mipLevel: level - (MAX_STAR_TEXTURE_LOD + 1), origin: { x: ti * tileSize, y: tj * tileSize, z: i } },
+          writeTextureWithPadding(
+            device,
+            this.starTexture2,
+            level - (MAX_STAR_TEXTURE_LOD + 1),
+            { x: ti * tileSize, y: tj * tileSize, z: i },
             data.subarray(start, start + tileSize * tileSize),
-            { bytesPerRow: tileSize * 4, rowsPerImage: tileSize },
-            [tileSize, tileSize, 1]
+            tileSize,
+            tileSize,
+            1,
+            4
           );
         }
         start += tileSize * tileSize;
