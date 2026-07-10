@@ -168,4 +168,4 @@ To support high-dynamic-range star catalogs from the Gaia space telescope while 
 
 ## 3. Credits & Acknowledgements
 
-This simulation is based on the general relativity physics modeling, precomputed lookup table structures, and Gaia star catalog pagination techniques originally developed and published by **Eric Bruneton**. Special thanks to the original author for making their research on relativistic graphics open and accessible.
+This simulation is based on the general relativity physics modeling, precomputed lookup table structures, and Gaia star catalog pagination techniques originally developed and published by **[Eric Bruneton](https://github.com/ebruneton/black_hole_shader)**. Special thanks to the original author for making their research on relativistic graphics open and accessible.
