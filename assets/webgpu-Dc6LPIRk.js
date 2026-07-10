@@ -1,4 +1,4 @@
-var V=Object.defineProperty;var O=(p,t,e)=>t in p?V(p,t,{enumerable:!0,configurable:!0,writable:!0,value:e}):p[t]=e;var o=(p,t,e)=>O(p,typeof t!="symbol"?t+"":t,e);import{M as q,U as z,S as H}from"./settings_panel-i3tiS7Ws.js";import{O as W}from"./orbit_panel-BjfCWvSP.js";const Y=`// WGSL translation of the Black Hole Ray Tracing shader
+var V=Object.defineProperty;var O=(p,t,e)=>t in p?V(p,t,{enumerable:!0,configurable:!0,writable:!0,value:e}):p[t]=e;var o=(p,t,e)=>O(p,typeof t!="symbol"?t+"":t,e);import{M as q,U as z,S as H,O as W}from"./orbit_panel-ByLhCXyj.js";const Y=`// WGSL translation of the Black Hole Ray Tracing shader
 //
 // =====================================================================================
 // PHYSICS & MATHEMATICS BACKGROUND OF THE BLACK HOLE RAYTRACER
