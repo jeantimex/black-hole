@@ -67,16 +67,20 @@ window.addEventListener('DOMContentLoaded', async () => {
   const model = new Model();
   new UrlParams(model);
 
+  const searchParams = new URLSearchParams(window.location.search);
+  const hideMenu = searchParams.has('hide_menu') && searchParams.get('hide_menu') !== 'false' && searchParams.get('hide_menu') !== '0';
+  const hideOrbit = searchParams.has('hide_orbit') && searchParams.get('hide_orbit') !== 'false' && searchParams.get('hide_orbit') !== '0';
+
   // 5. Initialize side configurations control panel.
   const settingsPanelEl = document.body.querySelector('#settings_panel');
   if (settingsPanelEl) {
-    new SettingsPanel(settingsPanelEl as HTMLElement, model);
+    new SettingsPanel(settingsPanelEl as HTMLElement, model, hideMenu);
   }
 
   // 6. Initialize relativistic orbit tracker panel.
   const orbitPanelEl = document.body.querySelector('#orbit_panel');
   if (orbitPanelEl) {
-    new OrbitPanel(orbitPanelEl as HTMLElement, model);
+    new OrbitPanel(orbitPanelEl as HTMLElement, model, hideOrbit);
   }
 
   // 7. Establish global JS exception listeners to output faults to the UI error panel.

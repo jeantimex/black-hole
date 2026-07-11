@@ -155,7 +155,7 @@ export class OrbitPanel implements ValueListener {
   private context: CanvasRenderingContext2D;
   private context3d: Context3d;
 
-  constructor(rootElement: HTMLElement, model: Model) {
+  constructor(rootElement: HTMLElement, model: Model, hideInitially = false) {
     this.rootElement = rootElement;
     this.model = model;
     this.model.addListener(this);
@@ -196,7 +196,9 @@ export class OrbitPanel implements ValueListener {
 
     this.onSettingsChange();
     this.onOrbitChange();
-    this.toggleVisibility();
+    if (!hideInitially) {
+      this.toggleVisibility();
+    }
 
     document.body.addEventListener('keypress', (e) => this.onKeyPress(e));
   }

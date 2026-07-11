@@ -166,6 +166,54 @@ To support high-dynamic-range star catalogs from the Gaia space telescope while 
 
 ---
 
-## 3. Credits & Acknowledgements
+## 3. URL Parameters & Keyboard Shortcuts
+
+The simulation state can be customized via URL query parameters, allowing you to share direct links to specific configurations.
+
+### URL Query Parameters
+
+| Parameter | Type | Description |
+| :--- | :--- | :--- |
+| `hide_menu` | Boolean | Hides the left settings control panel initially (e.g. `?hide_menu=1` or `?hide_menu`). |
+| `hide_orbit` | Boolean | Hides the top-right relativistic orbit panel initially (e.g. `?hide_orbit=1` or `?hide_orbit`). |
+| `ct` | Integer | Initial camera target (0: Accretion Disk, 1: Black Hole, 2: Lensed Orbit, 3: Front Orbit, 4: Rocket). |
+| `cy` | Integer | Initial camera yaw angle. |
+| `cp` | Integer | Initial camera pitch angle. |
+| `ce` | Integer | Photographic exposure value index. |
+| `cb` | Integer | Bloom percentage slider index. |
+| `hd` | Boolean | Toggle high definition render mode (`1` for enabled, `0` for disabled). |
+| `hc` | Boolean | Toggle high contrast render mode (`1` for enabled, `0` for disabled). |
+| `or` | Integer | Initial orbit distance (radial coordinate). |
+| `od` | Integer | Initial orbit direction angle. |
+| `os` | Integer | Initial orbit launch speed. |
+| `oi` | Integer | Orbit plane inclination angle. |
+| `pl` | Boolean | Toggle gravitational lensing (`1` for enabled, `0` for disabled). |
+| `pd` | Boolean | Toggle Doppler shift / Gravitational redshift effect (`1` for enabled, `0` for disabled). |
+| `sg` | Boolean | Toggle reference coordinate grid (`1` for enabled, `0` for disabled). |
+| `bhm` | Integer | Black hole mass index. |
+| `dd` | Integer | Accretion disk density index. |
+| `do` | Integer | Accretion disk opacity index. |
+| `dt` | Integer | Accretion disk temperature index. |
+| `srd` | Integer | Rocket coordinate distance. |
+| `sr` | Boolean | Toggle rocket mesh rendering (`1` for enabled, `0` for disabled). |
+| `sfy` | Integer | Stars skybox yaw rotation. |
+| `sfp` | Integer | Stars skybox pitch rotation. |
+| `sfr` | Integer | Stars skybox roll rotation. |
+| `sfe` | Boolean | Toggle stars skybox (`1` for enabled, `0` for disabled). |
+
+### Keyboard Shortcuts
+
+- **`Space`**: Toggle visibility of all user interface panels (settings menu, orbit panel, and loading text).
+- **`P`**: Toggle play / pause state of the spacecraft orbital path simulation.
+- **`+` / `-`**: Adjust camera exposure brightness.
+- **`D`**: Lock camera target to the accretion disk.
+- **`B`**: Lock camera target to the black hole event horizon.
+- **`L`**: Lock camera target to lensed view.
+- **`F`**: Lock camera target to front/relative view.
+- **`R`**: Lock camera target to the spacecraft cockpit view.
+
+---
+
+## 4. Credits & Acknowledgements
 
 This simulation is based on the general relativity physics modeling, precomputed lookup table structures, and Gaia star catalog pagination techniques originally developed and published by **[Eric Bruneton](https://github.com/ebruneton/black_hole_shader)**. Special thanks to the original author for making their research on relativistic graphics open and accessible.

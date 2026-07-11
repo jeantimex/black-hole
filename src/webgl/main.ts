@@ -46,16 +46,20 @@ window.addEventListener('DOMContentLoaded', () => {
   // 2. Parse and sync the model variables with URL query parameters.
   new UrlParams(model);
 
+  const searchParams = new URLSearchParams(window.location.search);
+  const hideMenu = searchParams.has('hide_menu') && searchParams.get('hide_menu') !== 'false' && searchParams.get('hide_menu') !== '0';
+  const hideOrbit = searchParams.has('hide_orbit') && searchParams.get('hide_orbit') !== 'false' && searchParams.get('hide_orbit') !== '0';
+
   // 3. Initialize the side control configurations panel.
   const settingsPanelEl = document.body.querySelector('#settings_panel');
   if (settingsPanelEl) {
-    new SettingsPanel(settingsPanelEl as HTMLElement, model);
+    new SettingsPanel(settingsPanelEl as HTMLElement, model, hideMenu);
   }
 
   // 4. Initialize the general relativity orbit metrics panel.
   const orbitPanelEl = document.body.querySelector('#orbit_panel');
   if (orbitPanelEl) {
-    new OrbitPanel(orbitPanelEl as HTMLElement, model);
+    new OrbitPanel(orbitPanelEl as HTMLElement, model, hideOrbit);
   }
 
   // 5. Establish global exception listeners to report errors in the user interface.

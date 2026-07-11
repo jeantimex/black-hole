@@ -186,7 +186,7 @@ export class SettingsPanel implements ValueListener {
   private previousMouseY: number | undefined = undefined;
   private drag = false;
 
-  constructor(rootElement: HTMLElement, model: Model) {
+  constructor(rootElement: HTMLElement, model: Model, hideInitially = false) {
     this.rootElement = rootElement;
     this.model = model;
     this.model.addListener(this);
@@ -227,7 +227,9 @@ export class SettingsPanel implements ValueListener {
     // Initial render and display configurations.
     this.onSettingsChange();
     this.onOrbitChange();
-    this.toggleVisibility();
+    if (!hideInitially) {
+      this.toggleVisibility();
+    }
 
     const selectOrThrow = (selector: string): HTMLElement => {
       const el = this.rootElement.querySelector(selector);
